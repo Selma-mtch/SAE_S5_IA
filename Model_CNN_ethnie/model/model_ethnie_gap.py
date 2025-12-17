@@ -1,19 +1,20 @@
 # %% [code]
 # -*- coding: utf-8 -*-
 """
-# Modèle d'ethnicité UTKFace - Classe "Autre" ignorée
+# Modèle d'ethnicité UTKFace - GlobalAveragePooling
 
 **Entraînement sur Kaggle**
 
-**Modification :**
-- La classe "Autre" (classe 4) a un poids de 0 pendant l'entraînement
-- Elle n'impacte pas la loss (ni positivement ni négativement)
-- Le modèle garde 5 classes mais apprend uniquement sur les 4 principales
+**Modification par rapport au modèle de base :**
+- Remplacement de Flatten() par GlobalAveragePooling2D()
+- Réduit drastiquement le nombre de paramètres
+- Meilleure généralisation (moins d'overfitting)
 
 **Preprocessing :**
 - Images en niveaux de gris (1 canal)
 - Redimensionnement 128x128
 - Normalisation /255
+- Class weights pour équilibrage
 
 **Pas de Data Augmentation**
 
@@ -83,7 +84,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dense, Dropout, BatchNormalization, GlobalAveragePooling2D
 from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -119,15 +120,7 @@ class_weights = compute_class_weight(
     y=y_train
 )
 class_weight_dict = dict(enumerate(class_weights))
-
-print(f"Class weights originaux : {class_weight_dict}")
-
-# IGNORER la classe "Autre" (classe 4) pendant l'entraînement
-# Poids = 0 signifie que ces échantillons n'impactent pas la loss
-# Le modèle garde 5 sorties mais apprend uniquement sur les 4 classes principales
-class_weight_dict[4] = 0.0  # Aucun impact sur l'apprentissage
-
-print(f"Class weights (Autre ignoré) : {class_weight_dict}")
+print(f"Class weights : {class_weight_dict}")
 
 # One-hot encoding (5 classes d'ethnicité)
 y_train_cat = to_categorical(y_train, num_classes=5)
@@ -136,7 +129,7 @@ y_test_cat = to_categorical(y_test, num_classes=5)
 print(f"X_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
 
-"""## 3. Création du modèle CNN"""
+"""## 3. Création du modèle CNN avec GlobalAveragePooling"""
 
 model = Sequential([
     Conv2D(32, (3, 3), activation='relu', input_shape=(128, 128, 1)),
@@ -154,10 +147,14 @@ model = Sequential([
     MaxPooling2D((2, 2)),
     Dropout(0.25),
 
-    Flatten(),
+    # GlobalAveragePooling au lieu de Flatten
+    # Flatten : 16x16x128 = 32768 paramètres → Dense 256 = 8M paramètres
+    # GAP : 128 valeurs → Dense 256 = 33K paramètres (240x moins!)
+    GlobalAveragePooling2D(),
+
     Dense(256, activation='relu'),
     Dropout(0.5),
-    Dense(5, activation='softmax')  # 5 classes (Autre inclus mais poids = 0)
+    Dense(5, activation='softmax')
 ])
 
 model.compile(
@@ -207,7 +204,7 @@ axes[1].legend()
 axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_autre_reduit.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_gap.png'), dpi=150)
 plt.show()
 
 # Résumé de l'entraînement
@@ -244,17 +241,17 @@ sns.heatmap(
     xticklabels=eth_labels,
     yticklabels=eth_labels
 )
-plt.title('Matrice de confusion - Poids "Autre" réduit')
+plt.title('Matrice de confusion - GlobalAveragePooling')
 plt.xlabel('Prédit')
 plt.ylabel('Réel')
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_autre_reduit.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_gap.png'), dpi=150)
 plt.show()
 
 """## 8. Sauvegarde du modèle"""
 
-model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_autre_reduit.keras'))
-print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_autre_reduit.keras")
+model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_gap.keras'))
+print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_gap.keras")
 
 print("\n→ Les fichiers sont disponibles dans l'onglet 'Output' de Kaggle pour téléchargement.")
 
@@ -275,7 +272,7 @@ bars2 = ax.bar(x, recall * 100, width, label='Recall', color='teal')
 bars3 = ax.bar(x + width, f1 * 100, width, label='F1-Score', color='coral')
 
 ax.set_ylabel('Score (%)')
-ax.set_title('Performances par classe - Poids "Autre" réduit')
+ax.set_title('Performances par classe - GlobalAveragePooling')
 ax.set_xticks(x)
 ax.set_xticklabels(eth_labels)
 ax.legend()
@@ -283,14 +280,15 @@ ax.set_ylim(0, 100)
 ax.grid(True, alpha=0.3, axis='y')
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'metrics_per_class_autre_reduit.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'metrics_per_class_gap.png'), dpi=150)
 plt.show()
 
 # Résumé final
 print("=" * 60)
-print("RÉSUMÉ FINAL - CLASSE 'AUTRE' IGNORÉE")
+print("RÉSUMÉ FINAL - GLOBALAVERAGEPOOLING")
 print("=" * 60)
-print(f"\nClasse 'Autre' : poids = 0 (n'impacte pas l'apprentissage)")
+print(f"\nModification : Flatten → GlobalAveragePooling2D")
+print(f"Avantage : ~240x moins de paramètres entre conv et dense")
 print(f"\nAccuracy globale : {accuracy*100:.2f}%")
 print(f"\nPerformances par classe :")
 for i, label in enumerate(eth_labels):
@@ -299,7 +297,7 @@ for i, label in enumerate(eth_labels):
 print(f"\n" + "=" * 60)
 print("FICHIERS SAUVEGARDÉS")
 print("=" * 60)
-print("  - ethnicity_model_autre_reduit.keras")
-print("  - training_curves_autre_reduit.png")
-print("  - confusion_matrix_autre_reduit.png")
-print("  - metrics_per_class_autre_reduit.png")
+print("  - ethnicity_model_gap.keras")
+print("  - training_curves_gap.png")
+print("  - confusion_matrix_gap.png")
+print("  - metrics_per_class_gap.png")
