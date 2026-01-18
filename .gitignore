@@ -1,1 +1,167 @@
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================
+# Environnements virtuels
+# ============================================
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# ============================================
+# Jupyter Notebooks
+# ============================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ============================================
+# IDE / Éditeurs
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================
+# Machine Learning - Modèles sauvegardés
+# ============================================
+*.h5
+*.hdf5
+*.keras
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+saved_models/
+checkpoints/
+models/
+weights/
+
+# ============================================
+# Machine Learning - Données
+# ============================================
+data/
+datasets/
+*.csv
+*.json
+*.parquet
+*.feather
+!requirements.json
+
+# Images (dataset)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+
+# ============================================
+# Machine Learning - Logs & Outputs
+# ============================================
+logs/
+runs/
+tensorboard/
+mlruns/
+wandb/
+outputs/
+results/
+*.log
+
+# ============================================
+# Kaggle
+# ============================================
+.kaggle/
+kaggle.json
+
+# ============================================
+# Claude Code
+# ============================================
 .claude
+
+# ============================================
+# Fichiers temporaires
+# ============================================
+*.tmp
+*.temp
+*.bak
+*.cache
+.cache/
+tmp/
+temp/
+
+# ============================================
+# Tests & Coverage
+# ============================================
+.coverage
+.tox/
+.nox/
+htmlcov/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# ============================================
+# Documentation
+# ============================================
+docs/_build/
+site/
+
+# ============================================
+# Secrets & Config locales
+# ============================================
+*.env
+.env.local
+.env.*.local
+secrets.yaml
+secrets.json
+config.local.yaml
