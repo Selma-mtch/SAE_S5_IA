@@ -84,7 +84,7 @@ print(f"Shape des images : {images.shape}")
 import tensorflow as tf
 from tensorflow.keras import backend as K
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, average_precision_score
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
@@ -447,10 +447,17 @@ print(f"Accuracy finale (val) : {history.history['val_accuracy'][-1]*100:.2f}%")
 
 """## 9. Évaluation du modèle"""
 
-y_pred = model.predict(X_test).argmax(axis=1)
+y_pred_proba = model.predict(X_test)
+y_pred = y_pred_proba.argmax(axis=1)
 
 loss, accuracy = model.evaluate(X_test, y_test_cat)
 print(f"\nAccuracy sur le test set : {accuracy*100:.2f}%")
+
+# AUC et AP (métriques multi-classes)
+auc_score = roc_auc_score(y_test_cat, y_pred_proba, multi_class='ovr', average='macro')
+ap_score = average_precision_score(y_test_cat, y_pred_proba, average='macro')
+print(f"AUC (macro) : {auc_score:.4f}")
+print(f"AP (macro) : {ap_score:.4f}")
 
 eth_labels = ['Blanc', 'Noir', 'Asiatique', 'Indien', 'Autre']
 print("\nRapport de classification :")
