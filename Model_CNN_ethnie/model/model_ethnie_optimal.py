@@ -1,30 +1,41 @@
 # %% [code]
 # -*- coding: utf-8 -*-
 """
-# Modèle d'ethnicité UTKFace - Architecture Complexe + ResNet + SE-Net + Separable Conv
+# Modèle d'ethnicité UTKFace - Architecture Optimale
 
 **Entraînement sur Kaggle**
 
-**Architecture complexe (VGG-style) améliorée avec :**
+**Combinaison des meilleures techniques identifiées :**
 
-1. **ResNet (Skip Connections)** :
-   - Connexions résiduelles autour de chaque bloc conv
+1. **Focal Loss** (du meilleur modèle 78.38%)
+   - Gère le déséquilibre des classes
+   - γ=2.0 pour pénaliser les erreurs faciles
+
+2. **ResNet (Skip Connections)**
    - Meilleur flux de gradient
+   - Évite la dégradation du réseau
 
-2. **SE-Net (Squeeze-and-Excitation)** :
-   - Attention sur les channels après chaque convolution
-   - Le modèle apprend quels filtres sont importants
+3. **SE-Net (Squeeze-and-Excitation)**
+   - Attention sur les channels
+   - Apprend l'importance des filtres
 
-3. **Separable Convolutions** :
-   - Remplace Conv2D par SeparableConv2D
-   - Réduit le nombre de paramètres
+4. **Separable Convolutions**
+   - Réduit les paramètres
+   - Meilleure généralisation
 
-**Structure complexe (VGG-style) :**
-- Bloc 1 : 64 filtres (double conv)
-- Bloc 2 : 128 filtres (double conv)
-- Bloc 3 : 256 filtres (double conv)
-- Bloc 4 : 512 filtres (double conv)
-- Dense : 512 → 256 → 5
+5. **Data Augmentation légère**
+   - Rotation ±10°
+   - Zoom ±5%
+
+6. **Régularisation renforcée**
+   - Dropout progressif : 0.3 → 0.4 → 0.5
+   - L2 regularization (1e-4) sur Conv2D, SeparableConv2D et Dense
+
+**Architecture intermédiaire (évite overfitting) :**
+- Bloc 1 : 48 filtres
+- Bloc 2 : 96 filtres
+- Bloc 3 : 192 filtres
+- Dense : 256 → 5
 
 **Preprocessing :**
 - Images en niveaux de gris (1 canal)
@@ -33,25 +44,6 @@
 - Class weights pour équilibrage
 
 **Dataset :** jangedoo/utkface-new
-
-## Résultats obtenus
-
-**Attention : Ces résultats sont partiellement faux en raison d'overfitting.**
-
-**Accuracy globale : 79.14%**
-
-| Classe    | Precision | Recall | F1-Score | Support |
-|-----------|-----------|--------|----------|---------|
-| Blanc     | 86.2%     | 81.3%  | 83.7%    | 1997    |
-| Noir      | 87.6%     | 82.9%  | 85.2%    | 928     |
-| Asiatique | 82.6%     | 87.5%  | 85.0%    | 686     |
-| Indien    | 78.3%     | 76.4%  | 77.3%    | 806     |
-| Autre     | 30.9%     | 44.6%  | 36.5%    | 325     |
-
-| Moyenne      | Precision | Recall | F1-Score |
-|--------------|-----------|--------|----------|
-| macro avg    | 73%       | 75%    | 74%      |
-| weighted avg | 81%       | 79%    | 80%      |
 
 ## 1. Chargement des données (Kaggle)
 """
@@ -118,9 +110,11 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.layers import (
     Input, Conv2D, SeparableConv2D, MaxPooling2D, Dense, Dropout,
     BatchNormalization, GlobalAveragePooling2D, Flatten, Add, Multiply,
-    Reshape, Activation
+    Reshape, Activation, RandomRotation, RandomZoom
 )
 from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -137,7 +131,8 @@ print(f"Shape après reshape : {X.shape}")
 X_train, X_test, y_train, y_test = train_test_split(
     X, y_ethnicity,
     test_size=0.2,
-    random_state=42
+    random_state=42,
+    stratify=y_ethnicity
 )
 
 X_train = X_train.astype('float32') / 255.0
@@ -159,7 +154,32 @@ y_test_cat = to_categorical(y_test, num_classes=5)
 print(f"X_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
 
-"""## 3. Définition des blocs (SE-Block)"""
+"""## 3. Définition de la Focal Loss"""
+
+
+def focal_loss(gamma=2.0):
+    """
+    Focal Loss pour gérer le déséquilibre des classes.
+
+    La Focal Loss réduit le poids des exemples bien classifiés
+    et se concentre sur les exemples difficiles.
+
+    Args:
+        gamma: Facteur de focalisation (2.0 recommandé)
+
+    Returns:
+        Fonction de loss
+    """
+    def loss_fn(y_true, y_pred):
+        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
+        cross_entropy = -y_true * tf.math.log(y_pred)
+        weight = y_true * tf.pow(1 - y_pred, gamma)
+        focal = weight * cross_entropy
+        return tf.reduce_mean(tf.reduce_sum(focal, axis=-1))
+    return loss_fn
+
+
+"""## 4. Définition du SE-Block"""
 
 
 def se_block(x, ratio=8):
@@ -167,6 +187,13 @@ def se_block(x, ratio=8):
     Squeeze-and-Excitation Block
 
     Apprend l'importance de chaque channel/filtre.
+
+    Args:
+        x: Input tensor
+        ratio: Ratio de réduction pour le bottleneck
+
+    Returns:
+        Tensor recalibré
     """
     filters = x.shape[-1]
 
@@ -184,160 +211,135 @@ def se_block(x, ratio=8):
     return Multiply()([x, se])
 
 
-def conv_block_with_se(x, filters, use_separable=True):
+"""## 5. Construction du modèle optimal"""
+
+
+def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     """
-    Bloc de double convolution style VGG avec SE-Net
+    Architecture Optimale combinant les meilleures techniques.
 
-    Args:
-        x: Input tensor
-        filters: Nombre de filtres
-        use_separable: Utiliser SeparableConv2D (True) ou Conv2D (False)
+    Structure intermédiaire (entre base et complexe) :
+    - Bloc 1 : 48 filtres
+    - Bloc 2 : 96 filtres
+    - Bloc 3 : 192 filtres
+    - Dense : 256 → 5
 
-    Returns:
-        Output tensor après double conv + SE
-    """
-    ConvLayer = SeparableConv2D if use_separable else Conv2D
-
-    # Première convolution
-    x = ConvLayer(filters, (3, 3), padding='same')(x)
-    x = BatchNormalization()(x)
-    x = Activation('relu')(x)
-
-    # Deuxième convolution
-    x = ConvLayer(filters, (3, 3), padding='same')(x)
-    x = BatchNormalization()(x)
-    x = Activation('relu')(x)
-
-    # SE-Block : attention sur les channels
-    x = se_block(x)
-
-    return x
-
-
-"""## 4. Construction du modèle (Architecture Complexe + 3 techniques)"""
-
-
-def build_model(input_shape=(128, 128, 1), num_classes=5):
-    """
-    Architecture Complexe (VGG-style) avec ResNet + SE-Net + Separable Conv
-
-    Même structure que model_ethnie_base_complexe.py :
-    - Bloc 1 : 64 filtres (double conv)
-    - Bloc 2 : 128 filtres (double conv)
-    - Bloc 3 : 256 filtres (double conv)
-    - Bloc 4 : 512 filtres (double conv)
-    - Dense : 512 → 256 → 5
-
-    Modifications :
-    - Conv2D → SeparableConv2D (sauf premier bloc)
-    - Ajout SE-Block après chaque double conv
-    - Ajout Skip Connection autour de chaque bloc
+    Techniques :
+    - ResNet : Skip connections
+    - SE-Net : Channel attention
+    - Separable Conv : Réduction paramètres
+    - Dropout progressif : 0.3 → 0.4 → 0.5
+    - L2 regularization
     """
     inputs = Input(shape=input_shape)
 
     # ================================================================
-    # BLOC 1 : 64 filtres (double conv comme VGG)
+    # DATA AUGMENTATION (légère, intégrée au modèle)
+    # Appliquée UNE SEULE FOIS sur l'input
     # ================================================================
-    # Premier bloc en Conv2D classique (SeparableConv pas efficace sur 1 channel)
-    x = conv_block_with_se(inputs, 64, use_separable=False)
+    augmented = RandomRotation(0.028)(inputs)  # ±10°
+    augmented = RandomZoom(0.05)(augmented)    # ±5%
 
-    # Skip connection : adapter l'input à 64 channels
-    shortcut = Conv2D(64, (1, 1), padding='same')(inputs)
-    x = Add()([x, shortcut])  # +ResNet : Skip connection
+    # ================================================================
+    # BLOC 1 : 48 filtres
+    # ================================================================
+    # Première conv en Conv2D classique (SeparableConv pas efficace sur 1 channel)
+    x = Conv2D(48, (3, 3), padding='same', kernel_regularizer=l2(1e-4))(augmented)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = se_block(x, ratio=8)
+
+    # Skip connection : utilise le MÊME input augmenté
+    shortcut = Conv2D(48, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(augmented)
+    x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
+    x = Dropout(0.3)(x)  # Dropout progressif - niveau 1
 
     # ================================================================
-    # BLOC 2 : 128 filtres (double conv)
-    # ================================================================
-    shortcut = x  # Sauvegarder pour skip connection
-
-    x = conv_block_with_se(x, 128, use_separable=True)  # +Separable
-
-    # Skip connection : adapter 64 → 128 channels
-    shortcut = Conv2D(128, (1, 1), padding='same')(shortcut)
-    x = Add()([x, shortcut])  # +ResNet
-
-    x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
-
-    # ================================================================
-    # BLOC 3 : 256 filtres (double conv)
+    # BLOC 2 : 96 filtres
     # ================================================================
     shortcut = x
 
-    x = conv_block_with_se(x, 256, use_separable=True)  # +Separable
+    x = SeparableConv2D(96, (3, 3), padding='same', depthwise_regularizer=l2(1e-4))(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = se_block(x, ratio=8)
 
-    # Skip connection : adapter 128 → 256 channels
-    shortcut = Conv2D(256, (1, 1), padding='same')(shortcut)
-    x = Add()([x, shortcut])  # +ResNet
+    # Skip connection : adapter 48 → 96 channels
+    shortcut = Conv2D(96, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
+    x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
+    x = Dropout(0.4)(x)  # Dropout progressif - niveau 2
 
     # ================================================================
-    # BLOC 4 : 512 filtres (double conv) - NOUVEAU vs modèle de base
+    # BLOC 3 : 192 filtres
     # ================================================================
     shortcut = x
 
-    x = conv_block_with_se(x, 512, use_separable=True)  # +Separable
+    x = SeparableConv2D(192, (3, 3), padding='same', depthwise_regularizer=l2(1e-4))(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+    x = se_block(x, ratio=8)
 
-    # Skip connection : adapter 256 → 512 channels
-    shortcut = Conv2D(512, (1, 1), padding='same')(shortcut)
-    x = Add()([x, shortcut])  # +ResNet
+    # Skip connection : adapter 96 → 192 channels
+    shortcut = Conv2D(192, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
+    x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
+    x = Dropout(0.5)(x)  # Dropout progressif - niveau 3
 
     # ================================================================
-    # CLASSIFICATION (comme le modèle complexe : 512 → 256 → 5)
+    # CLASSIFICATION
     # ================================================================
     x = Flatten()(x)
-    x = Dense(512, activation='relu')(x)
-    x = Dropout(0.5)(x)
-    x = Dense(256, activation='relu')(x)
+    x = Dense(256, activation='relu', kernel_regularizer=l2(1e-4))(x)
     x = Dropout(0.5)(x)
     outputs = Dense(num_classes, activation='softmax')(x)
 
-    model = Model(inputs, outputs, name='Complexe_ResNet_SE_Separable')
+    model = Model(inputs, outputs, name='Optimal_ResNet_SE_Focal')
     return model
 
 
 # Créer le modèle
-model = build_model(input_shape=(128, 128, 1), num_classes=5)
+model = build_optimal_model(input_shape=(128, 128, 1), num_classes=5)
 
+# Compilation avec Focal Loss
 model.compile(
-    optimizer='adam',
-    loss='categorical_crossentropy',
+    optimizer=Adam(learning_rate=1e-3),
+    loss=focal_loss(gamma=2.0),
     metrics=['accuracy']
 )
 
 model.summary()
 
-# Comparaison avec le modèle complexe de base
+# Informations sur le modèle
 print(f"\n{'='*60}")
-print("COMPARAISON AVEC LE MODÈLE COMPLEXE DE BASE")
+print("MODÈLE OPTIMAL - COMBINAISON DES MEILLEURES TECHNIQUES")
 print(f"{'='*60}")
 print(f"""
-Structure identique au modèle complexe (VGG-style) :
-  - Bloc 1 : 64 filtres (double conv)
-  - Bloc 2 : 128 filtres (double conv)
-  - Bloc 3 : 256 filtres (double conv)
-  - Bloc 4 : 512 filtres (double conv)
-  - Dense  : 512 → 256 → 5
+Architecture intermédiaire :
+  - Bloc 1 : 48 filtres
+  - Bloc 2 : 96 filtres
+  - Bloc 3 : 192 filtres
+  - Dense  : 256 → 5
 
-Modifications apportées :
-  +ResNet    : Skip connections autour de chaque bloc
-  +SE-Net    : Attention sur les channels (après chaque double conv)
-  +Separable : SeparableConv2D au lieu de Conv2D (blocs 2, 3 et 4)
+Techniques combinées :
+  - Focal Loss (γ=2.0) : Gestion déséquilibre classes
+  - ResNet : Skip connections
+  - SE-Net : Channel attention
+  - Separable Conv : Réduction paramètres
+  - Data Augmentation : Rotation ±10°, Zoom ±5%
+  - Dropout progressif : 0.3 → 0.4 → 0.5
+  - L2 regularization : 1e-4
 
 Paramètres : {model.count_params():,}
 """)
 
-"""## 5. Entraînement"""
+"""## 6. Entraînement"""
 
-# Split stratifié pour garder les mêmes proportions de classes
+# Split stratifié
 X_train_final, X_val, y_train_final, y_val = train_test_split(
     X_train, y_train_cat,
     test_size=0.2,
@@ -350,7 +352,7 @@ print(f"X_val : {X_val.shape}")
 
 early_stop = EarlyStopping(
     monitor='val_loss',
-    patience=10,
+    patience=8,
     restore_best_weights=True,
     verbose=1
 )
@@ -358,7 +360,7 @@ early_stop = EarlyStopping(
 reduce_lr = ReduceLROnPlateau(
     monitor='val_loss',
     factor=0.5,
-    patience=4,
+    patience=3,
     min_lr=1e-6,
     verbose=1
 )
@@ -372,7 +374,7 @@ history = model.fit(
     class_weight=class_weight_dict
 )
 
-"""## 6. Visualisation de l'entraînement"""
+"""## 7. Visualisation de l'entraînement"""
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -393,7 +395,7 @@ axes[1].legend()
 axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_complexe_resnet_se_separable.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_optimal.png'), dpi=150)
 plt.show()
 
 print("=" * 50)
@@ -405,7 +407,7 @@ print(f"Meilleure loss validation : {min(history.history['val_loss']):.4f}")
 print(f"\nAccuracy finale (train) : {history.history['accuracy'][-1]*100:.2f}%")
 print(f"Accuracy finale (val) : {history.history['val_accuracy'][-1]*100:.2f}%")
 
-"""## 7. Évaluation du modèle"""
+"""## 8. Évaluation du modèle"""
 
 y_pred_proba = model.predict(X_test)
 y_pred = y_pred_proba.argmax(axis=1)
@@ -423,7 +425,7 @@ eth_labels = ['Blanc', 'Noir', 'Asiatique', 'Indien', 'Autre']
 print("\nRapport de classification :")
 print(classification_report(y_test, y_pred, target_names=eth_labels))
 
-"""## 8. Matrice de confusion"""
+"""## 9. Matrice de confusion"""
 
 cm = confusion_matrix(y_test, y_pred)
 
@@ -436,59 +438,65 @@ sns.heatmap(
     xticklabels=eth_labels,
     yticklabels=eth_labels
 )
-plt.title('Matrice de confusion - Complexe + ResNet + SE + Separable')
+plt.title('Matrice de confusion - Modèle Optimal')
 plt.xlabel('Prédit')
 plt.ylabel('Réel')
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_complexe_resnet_se_separable.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_optimal.png'), dpi=150)
 plt.show()
 
-"""## 9. Sauvegarde du modèle"""
+"""## 10. Sauvegarde du modèle"""
 
-model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_complexe_resnet_se_separable.keras'))
-print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_complexe_resnet_se_separable.keras")
+model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_optimal.keras'))
+print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_optimal.keras")
 
 print("\n→ Les fichiers sont disponibles dans l'onglet 'Output' de Kaggle pour téléchargement.")
 
-"""## 10. Analyse des performances par classe"""
+"""## 11. Analyse des performances par classe"""
 
 precision, recall, f1, support = precision_recall_fscore_support(y_test, y_pred)
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
-x = np.arange(len(eth_labels))
+x_pos = np.arange(len(eth_labels))
 width = 0.25
 
-bars1 = ax.bar(x - width, precision * 100, width, label='Precision', color='steelblue')
-bars2 = ax.bar(x, recall * 100, width, label='Recall', color='teal')
-bars3 = ax.bar(x + width, f1 * 100, width, label='F1-Score', color='coral')
+bars1 = ax.bar(x_pos - width, precision * 100, width, label='Precision', color='steelblue')
+bars2 = ax.bar(x_pos, recall * 100, width, label='Recall', color='teal')
+bars3 = ax.bar(x_pos + width, f1 * 100, width, label='F1-Score', color='coral')
 
 ax.set_ylabel('Score (%)')
-ax.set_title('Performances par classe - Complexe + ResNet + SE + Separable')
-ax.set_xticks(x)
+ax.set_title('Performances par classe - Modèle Optimal')
+ax.set_xticks(x_pos)
 ax.set_xticklabels(eth_labels)
 ax.legend()
 ax.set_ylim(0, 100)
 ax.grid(True, alpha=0.3, axis='y')
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_PATH, 'metrics_per_class_complexe_resnet_se_separable.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_PATH, 'metrics_per_class_optimal.png'), dpi=150)
 plt.show()
 
 # Résumé final
 print("=" * 60)
-print("RÉSUMÉ FINAL - COMPLEXE + ResNet + SE-Net + Separable Conv")
+print("RÉSUMÉ FINAL - MODÈLE OPTIMAL")
 print("=" * 60)
 print(f"\nArchitecture :")
-print(f"  - 4 blocs convolutionnels (double conv style VGG)")
-print(f"  - Filtres : 64 → 128 → 256 → 512")
-print(f"  - Dense : 512 → 256 → 5")
+print(f"  - 3 blocs convolutionnels")
+print(f"  - Filtres : 48 → 96 → 192")
+print(f"  - Dense : 256 → 5")
 print(f"  - Paramètres : {model.count_params():,}")
-print(f"\nTechniques ajoutées :")
+print(f"\nTechniques combinées :")
+print(f"  - Focal Loss (γ=2.0)")
 print(f"  - ResNet : Skip connections")
 print(f"  - SE-Net : Channel attention")
-print(f"  - Separable Conv : Réduction paramètres")
+print(f"  - Separable Conv")
+print(f"  - Data Augmentation : Rotation ±10°, Zoom ±5%")
+print(f"  - Dropout progressif : 0.3 → 0.4 → 0.5")
+print(f"  - L2 regularization")
 print(f"\nAccuracy globale : {accuracy*100:.2f}%")
+print(f"AUC (macro) : {auc_score:.4f}")
+print(f"AP (macro) : {ap_score:.4f}")
 print(f"\nPerformances par classe :")
 for i, label in enumerate(eth_labels):
     print(f"  {label:10s} - Precision: {precision[i]*100:5.1f}% | Recall: {recall[i]*100:5.1f}% | F1: {f1[i]*100:5.1f}% | Support: {support[i]}")
@@ -496,7 +504,7 @@ for i, label in enumerate(eth_labels):
 print(f"\n" + "=" * 60)
 print("FICHIERS SAUVEGARDÉS")
 print("=" * 60)
-print("  - ethnicity_model_complexe_resnet_se_separable.keras")
-print("  - training_curves_complexe_resnet_se_separable.png")
-print("  - confusion_matrix_complexe_resnet_se_separable.png")
-print("  - metrics_per_class_complexe_resnet_se_separable.png")
+print("  - ethnicity_model_optimal.keras")
+print("  - training_curves_optimal.png")
+print("  - confusion_matrix_optimal.png")
+print("  - metrics_per_class_optimal.png")

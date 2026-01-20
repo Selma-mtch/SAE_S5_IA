@@ -7,7 +7,7 @@
 
 **Modification par rapport au modèle de base :**
 - Remplacement de Flatten() par GlobalAveragePooling2D()
-- Réduit drastiquement le nombre de paramètres
+- Réduit drastiquement le nombre de paramètres (~240x moins)
 - Meilleure généralisation (moins d'overfitting)
 
 **Preprocessing :**
@@ -19,6 +19,25 @@
 **Pas de Data Augmentation**
 
 **Dataset :** jangedoo/utkface-new
+
+## Résultats obtenus
+
+**Accuracy globale : 62.25%**
+
+| Classe    | Precision | Recall | F1-Score | Support |
+|-----------|-----------|--------|----------|---------|
+| Blanc     | 69.1%     | 78.1%  | 73.3%    | 1997    |
+| Noir      | 66.4%     | 64.7%  | 65.5%    | 928     |
+| Asiatique | 55.0%     | 64.7%  | 59.5%    | 686     |
+| Indien    | 47.5%     | 40.8%  | 43.9%    | 806     |
+| Autre     | 23.5%     | 5.8%   | 9.4%     | 325     |
+
+| Moyenne      | Precision | Recall | F1-Score |
+|--------------|-----------|--------|----------|
+| macro avg    | 52%       | 51%    | 50%      |
+| weighted avg | 60%       | 62%    | 60%      |
+
+**Conclusion :** GAP seul réduit trop la capacité du modèle (62.25% vs 74.67% base).
 
 ## 1. Chargement des données (Kaggle)
 """

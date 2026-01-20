@@ -22,6 +22,18 @@
 
 **Dataset :** jangedoo/utkface-new
 
+## Résultats obtenus
+
+**Accuracy globale : 78.38%** (meilleur modèle)
+
+| Classe    | Precision | Recall | F1-Score | Support |
+|-----------|-----------|--------|----------|---------|
+| Blanc     | 82.0%     | 86.0%  | 83.9%    | 1997    |
+| Noir      | 87.7%     | 80.9%  | 84.2%    | 928     |
+| Asiatique | 85.3%     | 83.7%  | 84.5%    | 686     |
+| Indien    | 74.5%     | 70.3%  | 72.4%    | 806     |
+| Autre     | 30.3%     | 33.2%  | 31.7%    | 325     |
+
 ## 1. Chargement des données (Kaggle)
 """
 

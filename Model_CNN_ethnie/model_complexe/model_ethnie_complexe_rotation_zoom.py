@@ -10,6 +10,7 @@
 - Double convolution par bloc (style VGG)
 - Plus de filtres : 64 → 128 → 256 → 512
 - Dense plus large : 512 → 256 → 5
+- Paramètres : 21,602,245
 
 **Preprocessing :**
 - Images en niveaux de gris (1 canal)
@@ -22,6 +23,25 @@
 - Zoom aléatoire (±10%)
 
 **Dataset :** jangedoo/utkface-new
+
+## Résultats obtenus
+
+**Accuracy globale : 42.53%**
+
+| Classe    | Precision | Recall | F1-Score | Support |
+|-----------|-----------|--------|----------|---------|
+| Blanc     | 60.3%     | 17.3%  | 26.9%    | 1997    |
+| Noir      | 78.5%     | 70.5%  | 74.3%    | 928     |
+| Asiatique | 28.6%     | 85.0%  | 42.8%    | 686     |
+| Indien    | 47.3%     | 49.4%  | 48.3%    | 806     |
+| Autre     | 8.1%      | 11.4%  | 9.5%     | 325     |
+
+| Moyenne      | Precision | Recall | F1-Score |
+|--------------|-----------|--------|----------|
+| macro avg    | 45%       | 47%    | 40%      |
+| weighted avg | 53%       | 43%    | 41%      |
+
+**Conclusion :** Architecture trop complexe → overfitting sévère (42.53% vs 74.67% base).
 
 ## 1. Chargement des données (Kaggle)
 """

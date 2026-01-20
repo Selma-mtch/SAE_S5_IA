@@ -15,6 +15,23 @@
 
 **Dataset :** jangedoo/utkface-new
 
+## Résultats obtenus
+
+**Accuracy globale : 74.67%**
+
+| Classe    | Precision | Recall | F1-Score | Support |
+|-----------|-----------|--------|----------|---------|
+| Blanc     | 89.1%     | 75.9%  | 82.0%    | 1997    |
+| Noir      | 83.9%     | 82.2%  | 83.1%    | 928     |
+| Asiatique | 89.2%     | 81.0%  | 85.0%    | 686     |
+| Indien    | 74.6%     | 64.8%  | 69.3%    | 806     |
+| Autre     | 22.8%     | 56.6%  | 32.5%    | 325     |
+
+| Moyenne      | Precision | Recall | F1-Score |
+|--------------|-----------|--------|----------|
+| macro avg    | 72%       | 72%    | 70%      |
+| weighted avg | 81%       | 75%    | 77%      |
+
 ## 1. Chargement des données (Kaggle)
 """
 

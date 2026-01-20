@@ -19,6 +19,27 @@
 
 **Dataset :** jangedoo/utkface-new
 
+## Résultats obtenus
+
+**Accuracy globale : 57.78%**
+
+**Note :** Classe 'Autre' : poids = 0 (n'impacte pas l'apprentissage)
+
+| Classe    | Precision | Recall | F1-Score | Support |
+|-----------|-----------|--------|----------|---------|
+| Blanc     | 54.1%     | 86.6%  | 66.6%    | 1997    |
+| Noir      | 83.6%     | 36.3%  | 50.6%    | 928     |
+| Asiatique | 54.3%     | 60.8%  | 57.4%    | 686     |
+| Indien    | 68.1%     | 31.8%  | 43.3%    | 806     |
+| Autre     | 0.0%      | 0.0%   | 0.0%     | 325     |
+
+| Moyenne      | Precision | Recall | F1-Score |
+|--------------|-----------|--------|----------|
+| macro avg    | 52%       | 43%    | 44%      |
+| weighted avg | 59%       | 58%    | 54%      |
+
+**Conclusion :** Ignorer la classe "Autre" dégrade les performances globales (57.78% vs 74.67% base).
+
 ## 1. Chargement des données (Kaggle)
 """
 

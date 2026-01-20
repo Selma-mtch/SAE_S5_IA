@@ -42,6 +42,28 @@
 - Normalisation /255
 - Class weights pour équilibrage
 
+## Résultats obtenus
+
+**Accuracy globale : 66.99%**
+
+**Datasets combinés :**
+- UTKFace : 23,705 images
+- FairFace : 97,698 images
+- Total : 121,403 images
+
+| Classe      | Precision | Recall | F1-Score | Support |
+|-------------|-----------|--------|----------|---------|
+| European    | 67.7%     | 67.0%  | 67.4%    | 5738    |
+| African     | 78.7%     | 74.0%  | 76.3%    | 3663    |
+| East Asian  | 80.7%     | 76.8%  | 78.7%    | 5896    |
+| South Asian | 60.7%     | 62.3%  | 61.5%    | 3562    |
+| Other       | 50.2%     | 54.6%  | 52.3%    | 5422    |
+
+| Moyenne      | Precision | Recall | F1-Score |
+|--------------|-----------|--------|----------|
+| macro avg    | 68%       | 67%    | 67%      |
+| weighted avg | 68%       | 67%    | 67%      |
+
 ## 1. Configuration et imports
 """
 
