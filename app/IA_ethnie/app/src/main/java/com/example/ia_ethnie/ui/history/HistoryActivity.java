@@ -137,16 +137,16 @@ public class HistoryActivity extends AppCompatActivity {
             }
 
             // Infos
-            holder.tvAge.setText("Âge: " + prediction.getPredictedAge());
-            holder.tvGender.setText("Genre: " + prediction.getPredictedGender());
-            holder.tvEthnicity.setText("Ethnicité: " + prediction.getPredictedEthnicity());
+            holder.tvAge.setText(prediction.getPredictedAge() + " ans");
+            holder.tvGender.setText(prediction.getPredictedGender());
+            holder.tvEthnicity.setText(prediction.getPredictedEthnicity());
 
             // Date
             SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRENCH);
             holder.tvDate.setText(sdf.format(new Date(prediction.getCreatedAt())));
 
             // Modèle
-            holder.tvModel.setText("Modèle: " + prediction.getModelType());
+            holder.tvModel.setText(prediction.getModelType());
 
             // Suppression
             holder.btnDelete.setOnClickListener(v -> {

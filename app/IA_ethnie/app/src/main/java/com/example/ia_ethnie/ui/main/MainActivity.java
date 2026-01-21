@@ -84,7 +84,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupUI() {
         setSupportActionBar(binding.toolbar);
-        binding.tvWelcome.setText("Bienvenue, " + sessionManager.getUsername() + "!");
+        binding.tvUsername.setText(sessionManager.getUsername());
     }
 
     private void setupListeners() {

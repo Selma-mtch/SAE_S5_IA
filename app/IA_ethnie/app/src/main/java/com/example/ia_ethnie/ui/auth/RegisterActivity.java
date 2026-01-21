@@ -36,6 +36,8 @@ public class RegisterActivity extends AppCompatActivity {
     private void setupListeners() {
         binding.btnRegister.setOnClickListener(v -> attemptRegister());
 
+        binding.btnBack.setOnClickListener(v -> finish());
+
         binding.tvLogin.setOnClickListener(v -> finish());
     }
 
