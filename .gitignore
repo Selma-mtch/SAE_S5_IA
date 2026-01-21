@@ -6,7 +6,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
 dist/
 downloads/
@@ -38,8 +37,6 @@ venv.bak/
 # Jupyter Notebooks
 # ============================================
 .ipynb_checkpoints/
-*.ipynb_checkpoints
-*/.ipynb_checkpoints/*
 
 # ============================================
 # IDE / Éditeurs
@@ -59,16 +56,16 @@ venv.bak/
 # OS
 # ============================================
 .DS_Store
-.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
 desktop.ini
+*.Zone.Identifier
 
 # ============================================
-# Machine Learning - Modèles sauvegardés
+# Machine Learning - Modèles
 # ============================================
 *.h5
 *.hdf5
@@ -79,32 +76,21 @@ desktop.ini
 *.pt
 *.pth
 *.onnx
+*.tflite
 saved_models/
 checkpoints/
-models/
 weights/
 
 # ============================================
-# Machine Learning - Données
+# Machine Learning - Données volumineuses
 # ============================================
 data/
 datasets/
-*.csv
-*.json
 *.parquet
 *.feather
-!requirements.json
-
-# Images (dataset)
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.tiff
 
 # ============================================
-# Machine Learning - Logs & Outputs
+# Machine Learning - Logs
 # ============================================
 logs/
 runs/
@@ -112,7 +98,6 @@ tensorboard/
 mlruns/
 wandb/
 outputs/
-results/
 *.log
 
 # ============================================
@@ -122,9 +107,19 @@ results/
 kaggle.json
 
 # ============================================
-# Claude Code
+# Android (général)
 # ============================================
-.claude
+*.apk
+*.aab
+*.ap_
+*.dex
+build/
+.gradle/
+local.properties
+*.iml
+.externalNativeBuild/
+.cxx/
+captures/
 
 # ============================================
 # Fichiers temporaires
@@ -145,23 +140,19 @@ temp/
 .nox/
 htmlcov/
 .pytest_cache/
-nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
 
 # ============================================
-# Documentation
+# Secrets
 # ============================================
-docs/_build/
-site/
-
-# ============================================
-# Secrets & Config locales
-# ============================================
-*.env
-.env.local
-.env.*.local
+*.env.local
 secrets.yaml
 secrets.json
 config.local.yaml
+
+# ============================================
+# Claude Code
+# ============================================
+.claude/

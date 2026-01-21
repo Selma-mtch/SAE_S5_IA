@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Overlay temps réel -->
+    <LinearLayout
+        android:id="@+id/realtimeOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="#80000000"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Analyse en temps réel"
+            android:textColor="@android:color/white"
+            android:textStyle="bold"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/tvRealtimeAge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Âge: --"
+            android:textColor="@android:color/white" />
+
+        <TextView
+            android:id="@+id/tvRealtimeGender"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Genre: --"
+            android:textColor="@android:color/white" />
+
+        <TextView
+            android:id="@+id/tvRealtimeEthnicity"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ethnicité: --"
+            android:textColor="@android:color/white" />
+
+    </LinearLayout>
+
+    <!-- Contrôles -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:padding="24dp"
+        android:background="#80000000"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <ImageButton
+            android:id="@+id/btnBack"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:background="@android:drawable/ic_menu_close_clear_cancel"
+            android:backgroundTint="@android:color/white"
+            android:contentDescription="Retour" />
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/btnCapture"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="32dp"
+            android:src="@android:drawable/ic_menu_camera"
+            app:fabSize="normal"
+            app:tint="@android:color/white" />
+
+        <ImageButton
+            android:id="@+id/btnSwitch"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:background="@android:drawable/ic_menu_rotate"
+            android:backgroundTint="@android:color/white"
+            android:contentDescription="Changer caméra" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

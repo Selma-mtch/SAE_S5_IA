@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Permissions -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -10,16 +18,50 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.IA_ethnie">
+        android:theme="@style/Theme.IA_ethnie"
+        tools:targetApi="31">
+
+        <!-- Login Activity (Launcher) -->
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.auth.LoginActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Register Activity -->
+        <activity
+            android:name=".ui.auth.RegisterActivity"
+            android:exported="false" />
+
+        <!-- Main Activity -->
+        <activity
+            android:name=".ui.main.MainActivity"
+            android:exported="false" />
+
+        <!-- Camera Activity -->
+        <activity
+            android:name=".ui.camera.CameraActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- Result Activity -->
+        <activity
+            android:name=".ui.result.ResultActivity"
+            android:exported="false" />
+
+        <!-- History Activity -->
+        <activity
+            android:name=".ui.history.HistoryActivity"
+            android:exported="false" />
+
+        <!-- Model Info Activity -->
+        <activity
+            android:name=".ui.info.ModelInfoActivity"
+            android:exported="false" />
+
     </application>
 
 </manifest>

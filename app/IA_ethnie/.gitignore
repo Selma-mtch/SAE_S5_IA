@@ -1,15 +1,84 @@
+# ============================================
+# Android Build
+# ============================================
+*.apk
+*.aab
+*.ap_
+*.dex
+build/
+.gradle/
+
+# ============================================
+# Gradle
+# ============================================
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# ============================================
+# Android Studio / IntelliJ
+# ============================================
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.idea/
+!.idea/codeStyles/
+!.idea/runConfigurations/
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries/
+.idea/vcs.xml
+
+# ============================================
+# Local Configuration
+# ============================================
 local.properties
+*.properties
+!gradle.properties
+
+# ============================================
+# Native Build
+# ============================================
+.externalNativeBuild/
+.cxx/
+obj/
+
+# ============================================
+# Proguard
+# ============================================
+proguard/
+
+# ============================================
+# Logs & Debug
+# ============================================
+*.log
+captures/
+*.hprof
+
+# ============================================
+# Google Services (si Firebase)
+# ============================================
+google-services.json
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
+
+# ============================================
+# TensorFlow Lite Models (optionnel)
+# ============================================
+# Décommenter si les modèles sont trop lourds pour Git
+# app/src/main/assets/*.tflite
+
+# ============================================
+# Signing
+# ============================================
+*.jks
+*.keystore
+signing.properties

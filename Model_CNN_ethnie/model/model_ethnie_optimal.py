@@ -7,9 +7,9 @@
 
 **Combinaison des meilleures techniques identifiées :**
 
-1. **Focal Loss** (du meilleur modèle 78.38%)
-   - Gère le déséquilibre des classes
-   - γ=2.0 pour pénaliser les erreurs faciles
+1. **Augmentation ciblée (remplace class_weight)**
+   - Sur-échantillonnage des classes minoritaires (Indien, Autre)
+   - Évite la double pénalisation class_weight + augmentation
 
 2. **ResNet (Skip Connections)**
    - Meilleur flux de gradient
@@ -31,17 +31,21 @@
    - Dropout progressif : 0.3 → 0.4 → 0.5
    - L2 regularization (1e-4) sur Conv2D, SeparableConv2D et Dense
 
-**Architecture intermédiaire (évite overfitting) :**
+**Architecture optimisée pour 80%+ :**
 - Bloc 1 : 48 filtres
 - Bloc 2 : 96 filtres
 - Bloc 3 : 192 filtres
 - Dense : 256 → 5
 
+**Augmentation ciblée :**
+- Sur-échantillonnage des classes minoritaires (Indien, Autre)
+- Augmentation renforcée sur ces classes
+
 **Preprocessing :**
 - Images en niveaux de gris (1 canal)
 - Redimensionnement 128x128
 - Normalisation /255
-- Class weights pour équilibrage
+- Augmentation ciblée pour équilibrage (pas de class_weight)
 
 **Dataset :** jangedoo/utkface-new
 
@@ -105,7 +109,6 @@ print(f"Shape des images : {images.shape}")
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support, roc_auc_score, average_precision_score
-from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.layers import (
     Input, Conv2D, SeparableConv2D, MaxPooling2D, Dense, Dropout,
@@ -140,46 +143,102 @@ X_test = X_test.astype('float32') / 255.0
 
 print(f"X_train min/max : {X_train.min():.2f} / {X_train.max():.2f}")
 
-class_weights = compute_class_weight(
-    class_weight='balanced',
-    classes=np.unique(y_train),
-    y=y_train
-)
-class_weight_dict = dict(enumerate(class_weights))
-print(f"Class weights : {class_weight_dict}")
+# ================================================================
+# AUGMENTATION CIBLÉE : Sur-échantillonnage des classes minoritaires
+# ================================================================
+print("\n" + "=" * 50)
+print("AUGMENTATION CIBLÉE DES CLASSES MINORITAIRES")
+print("=" * 50)
 
+# Distribution avant augmentation
+print("\nDistribution AVANT augmentation :")
+for i in range(5):
+    count = np.sum(y_train == i)
+    print(f"  Classe {i} : {count}")
+
+# Identifier les classes à augmenter (Indien=3, Autre=4)
+classes_to_augment = [3, 4]  # Indien et Autre
+target_count = int(np.sum(y_train == 0) * 0.8)  # 80% de la classe majoritaire
+
+X_train_aug = list(X_train)
+y_train_aug = list(y_train)
+
+from scipy.ndimage import rotate, zoom
+
+def augment_image(img):
+    """Applique une augmentation aléatoire à une image"""
+    # Rotation aléatoire ±15°
+    angle = np.random.uniform(-15, 15)
+    img_rot = rotate(img.reshape(128, 128), angle, reshape=False, mode='nearest')
+
+    # Zoom aléatoire ±10%
+    zoom_factor = np.random.uniform(0.9, 1.1)
+    h, w = img_rot.shape
+
+    if zoom_factor > 1:
+        # Crop center
+        img_zoom = zoom(img_rot, zoom_factor, mode='nearest')
+        start_h = (img_zoom.shape[0] - h) // 2
+        start_w = (img_zoom.shape[1] - w) // 2
+        img_zoom = img_zoom[start_h:start_h+h, start_w:start_w+w]
+    else:
+        # Pad
+        img_zoom = zoom(img_rot, zoom_factor, mode='nearest')
+        pad_h = (h - img_zoom.shape[0]) // 2
+        pad_w = (w - img_zoom.shape[1]) // 2
+        img_zoom = np.pad(img_zoom, ((pad_h, h-img_zoom.shape[0]-pad_h),
+                                      (pad_w, w-img_zoom.shape[1]-pad_w)), mode='edge')
+
+    # Flip horizontal aléatoire
+    if np.random.random() > 0.5:
+        img_zoom = np.fliplr(img_zoom)
+
+    # IMPORTANT: Clip les valeurs pour rester dans [0, 1]
+    img_zoom = np.clip(img_zoom, 0.0, 1.0)
+
+    return img_zoom.reshape(128, 128, 1)
+
+for class_id in classes_to_augment:
+    class_indices = np.where(y_train == class_id)[0]
+    current_count = len(class_indices)
+    samples_to_add = target_count - current_count
+
+    if samples_to_add > 0:
+        print(f"\nClasse {class_id} : {current_count} → {target_count} (+{samples_to_add})")
+
+        for _ in range(samples_to_add):
+            # Sélectionner une image aléatoire de cette classe
+            idx = np.random.choice(class_indices)
+            img = X_train[idx]
+
+            # Augmenter l'image
+            img_aug = augment_image(img)
+
+            X_train_aug.append(img_aug)
+            y_train_aug.append(class_id)
+
+X_train = np.array(X_train_aug)
+y_train = np.array(y_train_aug)
+
+print("\nDistribution APRÈS augmentation :")
+for i in range(5):
+    count = np.sum(y_train == i)
+    print(f"  Classe {i} : {count}")
+
+print(f"\nNouvelle taille X_train : {X_train.shape}")
+
+# Note: class_weight non utilisé car on utilise l'augmentation ciblée
+# qui équilibre déjà le dataset (évite double pénalisation)
+print("Note: Class weights désactivés (augmentation ciblée utilisée)")
+
+# One-hot encoding
 y_train_cat = to_categorical(y_train, num_classes=5)
 y_test_cat = to_categorical(y_test, num_classes=5)
 
 print(f"X_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
 
-"""## 3. Définition de la Focal Loss"""
-
-
-def focal_loss(gamma=2.0):
-    """
-    Focal Loss pour gérer le déséquilibre des classes.
-
-    La Focal Loss réduit le poids des exemples bien classifiés
-    et se concentre sur les exemples difficiles.
-
-    Args:
-        gamma: Facteur de focalisation (2.0 recommandé)
-
-    Returns:
-        Fonction de loss
-    """
-    def loss_fn(y_true, y_pred):
-        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
-        cross_entropy = -y_true * tf.math.log(y_pred)
-        weight = y_true * tf.pow(1 - y_pred, gamma)
-        focal = weight * cross_entropy
-        return tf.reduce_mean(tf.reduce_sum(focal, axis=-1))
-    return loss_fn
-
-
-"""## 4. Définition du SE-Block"""
+"""## 3. Définition du SE-Block"""
 
 
 def se_block(x, ratio=8):
@@ -216,9 +275,9 @@ def se_block(x, ratio=8):
 
 def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     """
-    Architecture Optimale combinant les meilleures techniques.
+    Architecture Optimale combinant les meilleures techniques pour 80%+.
 
-    Structure intermédiaire (entre base et complexe) :
+    Structure optimisée :
     - Bloc 1 : 48 filtres
     - Bloc 2 : 96 filtres
     - Bloc 3 : 192 filtres
@@ -229,7 +288,7 @@ def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     - SE-Net : Channel attention
     - Separable Conv : Réduction paramètres
     - Dropout progressif : 0.3 → 0.4 → 0.5
-    - L2 regularization
+    - L2 regularization (1e-4)
     """
     inputs = Input(shape=input_shape)
 
@@ -243,18 +302,16 @@ def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     # ================================================================
     # BLOC 1 : 48 filtres
     # ================================================================
-    # Première conv en Conv2D classique (SeparableConv pas efficace sur 1 channel)
     x = Conv2D(48, (3, 3), padding='same', kernel_regularizer=l2(1e-4))(augmented)
     x = BatchNormalization()(x)
     x = Activation('relu')(x)
-    x = se_block(x, ratio=8)
+    x = se_block(x, ratio=4)
 
-    # Skip connection : utilise le MÊME input augmenté
     shortcut = Conv2D(48, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(augmented)
     x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.3)(x)  # Dropout progressif - niveau 1
+    x = Dropout(0.3)(x)
 
     # ================================================================
     # BLOC 2 : 96 filtres
@@ -266,12 +323,11 @@ def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     x = Activation('relu')(x)
     x = se_block(x, ratio=8)
 
-    # Skip connection : adapter 48 → 96 channels
     shortcut = Conv2D(96, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
     x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.4)(x)  # Dropout progressif - niveau 2
+    x = Dropout(0.4)(x)
 
     # ================================================================
     # BLOC 3 : 192 filtres
@@ -283,12 +339,11 @@ def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     x = Activation('relu')(x)
     x = se_block(x, ratio=8)
 
-    # Skip connection : adapter 96 → 192 channels
     shortcut = Conv2D(192, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
     x = Add()([x, shortcut])
 
     x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.5)(x)  # Dropout progressif - niveau 3
+    x = Dropout(0.5)(x)
 
     # ================================================================
     # CLASSIFICATION
@@ -298,17 +353,17 @@ def build_optimal_model(input_shape=(128, 128, 1), num_classes=5):
     x = Dropout(0.5)(x)
     outputs = Dense(num_classes, activation='softmax')(x)
 
-    model = Model(inputs, outputs, name='Optimal_ResNet_SE_Focal')
+    model = Model(inputs, outputs, name='Optimal_ResNet_SE_Separable')
     return model
 
 
 # Créer le modèle
 model = build_optimal_model(input_shape=(128, 128, 1), num_classes=5)
 
-# Compilation avec Focal Loss
+# Compilation avec categorical_crossentropy
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
-    loss=focal_loss(gamma=2.0),
+    loss='categorical_crossentropy',
     metrics=['accuracy']
 )
 
@@ -319,14 +374,14 @@ print(f"\n{'='*60}")
 print("MODÈLE OPTIMAL - COMBINAISON DES MEILLEURES TECHNIQUES")
 print(f"{'='*60}")
 print(f"""
-Architecture intermédiaire :
+Architecture optimisée pour 80%+ :
   - Bloc 1 : 48 filtres
   - Bloc 2 : 96 filtres
   - Bloc 3 : 192 filtres
   - Dense  : 256 → 5
 
 Techniques combinées :
-  - Focal Loss (γ=2.0) : Gestion déséquilibre classes
+  - Augmentation ciblée : Sur-échantillonnage classes minoritaires (remplace class_weight)
   - ResNet : Skip connections
   - SE-Net : Channel attention
   - Separable Conv : Réduction paramètres
@@ -370,8 +425,8 @@ history = model.fit(
     epochs=50,
     batch_size=64,
     validation_data=(X_val, y_val),
-    callbacks=[early_stop, reduce_lr],
-    class_weight=class_weight_dict
+    callbacks=[early_stop, reduce_lr]
+    # Note: class_weight retiré car on utilise l'augmentation ciblée
 )
 
 """## 7. Visualisation de l'entraînement"""
@@ -481,13 +536,13 @@ plt.show()
 print("=" * 60)
 print("RÉSUMÉ FINAL - MODÈLE OPTIMAL")
 print("=" * 60)
-print(f"\nArchitecture :")
+print(f"\nArchitecture optimisée pour 80%+ :")
 print(f"  - 3 blocs convolutionnels")
 print(f"  - Filtres : 48 → 96 → 192")
 print(f"  - Dense : 256 → 5")
 print(f"  - Paramètres : {model.count_params():,}")
 print(f"\nTechniques combinées :")
-print(f"  - Focal Loss (γ=2.0)")
+print(f"  - Augmentation ciblée : Sur-échantillonnage classes minoritaires (remplace class_weight)")
 print(f"  - ResNet : Skip connections")
 print(f"  - SE-Net : Channel attention")
 print(f"  - Separable Conv")
