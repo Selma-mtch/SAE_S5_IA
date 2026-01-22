@@ -65,10 +65,6 @@ dependencies {
     // Guava (pour ListenableFuture utilisé par CameraX)
     implementation("com.google.guava:guava:31.1-android")
 
-    // Room Database
-    implementation(libs.room.runtime)
-    annotationProcessor(libs.room.compiler)
-
     // Lifecycle
     implementation(libs.lifecycle.viewmodel)
     implementation(libs.lifecycle.livedata)
