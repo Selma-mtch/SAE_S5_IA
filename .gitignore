@@ -85,6 +85,7 @@ weights/
 # Machine Learning - Données volumineuses
 # ============================================
 data/
+!app/IA_ethnie/app/src/main/java/**/data/
 datasets/
 *.parquet
 *.feather
