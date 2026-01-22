@@ -7,20 +7,21 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.ia_ethnie.data.database.AppDatabase;
-import com.example.ia_ethnie.data.model.Prediction;
 import com.example.ia_ethnie.databinding.ActivityResultBinding;
 import com.example.ia_ethnie.ml.FaceAnalyzer;
 import com.example.ia_ethnie.utils.SessionManager;
+import com.google.firebase.firestore.FirebaseFirestore;
 
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class ResultActivity extends AppCompatActivity {
     private ActivityResultBinding binding;
     private FaceAnalyzer faceAnalyzer;
-    private AppDatabase database;
+    private FirebaseFirestore db;
     private SessionManager sessionManager;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private String imagePath;
@@ -32,7 +33,7 @@ public class ResultActivity extends AppCompatActivity {
         binding = ActivityResultBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        database = AppDatabase.getInstance(this);
+        db = FirebaseFirestore.getInstance();
         sessionManager = new SessionManager(this);
         faceAnalyzer = new FaceAnalyzer(this);
 
@@ -103,27 +104,36 @@ public class ResultActivity extends AppCompatActivity {
     private void saveResult() {
         if (currentResult == null) return;
 
-        executor.execute(() -> {
-            Prediction prediction = new Prediction(
-                    sessionManager.getUserId(),
-                    imagePath,
-                    currentResult.age,
-                    currentResult.gender,
-                    currentResult.ethnicity,
-                    currentResult.ageConfidence,
-                    currentResult.genderConfidence,
-                    currentResult.ethnicityConfidence,
-                    currentResult.modelType.name()
-            );
+        String userId = sessionManager.getUserId();
+        if (userId == null) {
+            Toast.makeText(this, "Erreur: utilisateur non connecté", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
-            database.predictionDao().insert(prediction);
+        binding.btnSave.setEnabled(false);
 
-            runOnUiThread(() -> {
-                Toast.makeText(this, "Résultat sauvegardé!", Toast.LENGTH_SHORT).show();
-                binding.btnSave.setEnabled(false);
-                binding.btnSave.setAlpha(0.5f);
-            });
-        });
+        // Créer le document pour Firestore
+        Map<String, Object> prediction = new HashMap<>();
+        prediction.put("userId", userId);
+        prediction.put("localImagePath", imagePath);
+        prediction.put("age", currentResult.age);
+        prediction.put("gender", currentResult.gender);
+        prediction.put("ethnicity", currentResult.ethnicity);
+        prediction.put("ageConfidence", currentResult.ageConfidence);
+        prediction.put("genderConfidence", currentResult.genderConfidence);
+        prediction.put("ethnicityConfidence", currentResult.ethnicityConfidence);
+        prediction.put("modelType", currentResult.modelType.name());
+        prediction.put("createdAt", System.currentTimeMillis());
+
+        db.collection("predictions").add(prediction)
+                .addOnSuccessListener(documentReference -> {
+                    Toast.makeText(this, "Résultat sauvegardé!", Toast.LENGTH_SHORT).show();
+                    binding.btnSave.setAlpha(0.5f);
+                })
+                .addOnFailureListener(e -> {
+                    binding.btnSave.setEnabled(true);
+                    Toast.makeText(this, "Erreur lors de la sauvegarde", Toast.LENGTH_SHORT).show();
+                });
     }
 
     private void shareResult() {

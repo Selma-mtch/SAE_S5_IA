@@ -3,46 +3,48 @@ package com.example.ia_ethnie.utils;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+
 public class SessionManager {
     private static final String PREF_NAME = "IAEthnieSession";
-    private static final String KEY_USER_ID = "user_id";
     private static final String KEY_USERNAME = "username";
-    private static final String KEY_EMAIL = "email";
-    private static final String KEY_IS_LOGGED_IN = "is_logged_in";
 
     private final SharedPreferences prefs;
     private final SharedPreferences.Editor editor;
+    private final FirebaseAuth auth;
 
     public SessionManager(Context context) {
         prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         editor = prefs.edit();
+        auth = FirebaseAuth.getInstance();
     }
 
-    public void createSession(int userId, String username, String email) {
-        editor.putInt(KEY_USER_ID, userId);
+    public void saveUsername(String username) {
         editor.putString(KEY_USERNAME, username);
-        editor.putString(KEY_EMAIL, email);
-        editor.putBoolean(KEY_IS_LOGGED_IN, true);
         editor.apply();
     }
 
     public boolean isLoggedIn() {
-        return prefs.getBoolean(KEY_IS_LOGGED_IN, false);
+        return auth.getCurrentUser() != null;
     }
 
-    public int getUserId() {
-        return prefs.getInt(KEY_USER_ID, -1);
+    public String getUserId() {
+        FirebaseUser user = auth.getCurrentUser();
+        return user != null ? user.getUid() : null;
     }
 
     public String getUsername() {
-        return prefs.getString(KEY_USERNAME, "");
+        return prefs.getString(KEY_USERNAME, "Utilisateur");
     }
 
     public String getEmail() {
-        return prefs.getString(KEY_EMAIL, "");
+        FirebaseUser user = auth.getCurrentUser();
+        return user != null ? user.getEmail() : "";
     }
 
     public void logout() {
+        auth.signOut();
         editor.clear();
         editor.apply();
     }

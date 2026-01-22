@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -61,6 +62,9 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
 
+    // Guava (pour ListenableFuture utilisé par CameraX)
+    implementation("com.google.guava:guava:31.1-android")
+
     // Room Database
     implementation(libs.room.runtime)
     annotationProcessor(libs.room.compiler)
@@ -71,6 +75,12 @@ dependencies {
 
     // Glide pour chargement d'images
     implementation(libs.glide)
+
+    // Firebase
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.auth)
+    implementation(libs.firebase.firestore)
+    implementation(libs.firebase.storage)
 
     // Tests
     testImplementation(libs.junit)

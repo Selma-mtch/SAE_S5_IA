@@ -6,20 +6,17 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.ia_ethnie.data.database.AppDatabase;
-import com.example.ia_ethnie.data.model.User;
 import com.example.ia_ethnie.databinding.ActivityLoginBinding;
 import com.example.ia_ethnie.ui.main.MainActivity;
 import com.example.ia_ethnie.utils.SessionManager;
-
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.firestore.FirebaseFirestore;
 
 public class LoginActivity extends AppCompatActivity {
     private ActivityLoginBinding binding;
-    private AppDatabase database;
+    private FirebaseAuth auth;
+    private FirebaseFirestore db;
     private SessionManager sessionManager;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,7 +24,8 @@ public class LoginActivity extends AppCompatActivity {
         binding = ActivityLoginBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        database = AppDatabase.getInstance(this);
+        auth = FirebaseAuth.getInstance();
+        db = FirebaseFirestore.getInstance();
         sessionManager = new SessionManager(this);
 
         // Vérifier si déjà connecté
@@ -58,18 +56,31 @@ public class LoginActivity extends AppCompatActivity {
 
         binding.btnLogin.setEnabled(false);
 
-        executor.execute(() -> {
-            User user = database.userDao().login(email, password);
-            runOnUiThread(() -> {
-                binding.btnLogin.setEnabled(true);
-                if (user != null) {
-                    sessionManager.createSession(user.getId(), user.getUsername(), user.getEmail());
-                    navigateToMain();
-                } else {
-                    Toast.makeText(this, "Email ou mot de passe incorrect", Toast.LENGTH_SHORT).show();
-                }
-            });
-        });
+        auth.signInWithEmailAndPassword(email, password)
+                .addOnSuccessListener(authResult -> {
+                    // Récupérer le username depuis Firestore
+                    String uid = authResult.getUser().getUid();
+                    db.collection("users").document(uid).get()
+                            .addOnSuccessListener(document -> {
+                                String username = document.getString("username");
+                                if (username != null) {
+                                    sessionManager.saveUsername(username);
+                                }
+                                navigateToMain();
+                            })
+                            .addOnFailureListener(e -> {
+                                // Même si on ne trouve pas le username, on continue
+                                navigateToMain();
+                            });
+                })
+                .addOnFailureListener(e -> {
+                    binding.btnLogin.setEnabled(true);
+                    String errorMessage = "Email ou mot de passe incorrect";
+                    if (e.getMessage() != null && e.getMessage().contains("network")) {
+                        errorMessage = "Erreur réseau. Vérifiez votre connexion.";
+                    }
+                    Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT).show();
+                });
     }
 
     private void navigateToMain() {
@@ -77,11 +88,5 @@ public class LoginActivity extends AppCompatActivity {
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
         finish();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        executor.shutdown();
     }
 }

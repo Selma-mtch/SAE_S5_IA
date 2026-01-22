@@ -6,20 +6,20 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.example.ia_ethnie.data.database.AppDatabase;
-import com.example.ia_ethnie.data.model.User;
 import com.example.ia_ethnie.databinding.ActivityRegisterBinding;
 import com.example.ia_ethnie.ui.main.MainActivity;
 import com.example.ia_ethnie.utils.SessionManager;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.firestore.FirebaseFirestore;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.HashMap;
+import java.util.Map;
 
 public class RegisterActivity extends AppCompatActivity {
     private ActivityRegisterBinding binding;
-    private AppDatabase database;
+    private FirebaseAuth auth;
+    private FirebaseFirestore db;
     private SessionManager sessionManager;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -27,7 +27,8 @@ public class RegisterActivity extends AppCompatActivity {
         binding = ActivityRegisterBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        database = AppDatabase.getInstance(this);
+        auth = FirebaseAuth.getInstance();
+        db = FirebaseFirestore.getInstance();
         sessionManager = new SessionManager(this);
 
         setupListeners();
@@ -75,40 +76,45 @@ public class RegisterActivity extends AppCompatActivity {
 
         binding.btnRegister.setEnabled(false);
 
-        executor.execute(() -> {
-            // Vérifier si l'email existe déjà
-            if (database.userDao().emailExists(email)) {
-                runOnUiThread(() -> {
+        // Créer l'utilisateur avec Firebase Auth
+        auth.createUserWithEmailAndPassword(email, password)
+                .addOnSuccessListener(authResult -> {
+                    String uid = authResult.getUser().getUid();
+
+                    // Sauvegarder les infos utilisateur dans Firestore
+                    Map<String, Object> userData = new HashMap<>();
+                    userData.put("username", username);
+                    userData.put("email", email);
+                    userData.put("createdAt", System.currentTimeMillis());
+
+                    db.collection("users").document(uid).set(userData)
+                            .addOnSuccessListener(aVoid -> {
+                                sessionManager.saveUsername(username);
+                                Toast.makeText(this, "Compte créé avec succès!", Toast.LENGTH_SHORT).show();
+                                navigateToMain();
+                            })
+                            .addOnFailureListener(e -> {
+                                // Même si Firestore échoue, le compte Auth est créé
+                                sessionManager.saveUsername(username);
+                                navigateToMain();
+                            });
+                })
+                .addOnFailureListener(e -> {
                     binding.btnRegister.setEnabled(true);
-                    Toast.makeText(this, "Cet email est déjà utilisé", Toast.LENGTH_SHORT).show();
+                    String errorMessage = "Erreur lors de la création du compte";
+
+                    if (e.getMessage() != null) {
+                        if (e.getMessage().contains("email address is already")) {
+                            errorMessage = "Cet email est déjà utilisé";
+                        } else if (e.getMessage().contains("network")) {
+                            errorMessage = "Erreur réseau. Vérifiez votre connexion.";
+                        } else if (e.getMessage().contains("weak password")) {
+                            errorMessage = "Mot de passe trop faible";
+                        }
+                    }
+
+                    Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT).show();
                 });
-                return;
-            }
-
-            // Vérifier si le nom d'utilisateur existe déjà
-            if (database.userDao().usernameExists(username)) {
-                runOnUiThread(() -> {
-                    binding.btnRegister.setEnabled(true);
-                    Toast.makeText(this, "Ce nom d'utilisateur est déjà pris", Toast.LENGTH_SHORT).show();
-                });
-                return;
-            }
-
-            // Créer l'utilisateur
-            User newUser = new User(username, email, password);
-            long userId = database.userDao().insert(newUser);
-
-            runOnUiThread(() -> {
-                binding.btnRegister.setEnabled(true);
-                if (userId > 0) {
-                    sessionManager.createSession((int) userId, username, email);
-                    Toast.makeText(this, "Compte créé avec succès!", Toast.LENGTH_SHORT).show();
-                    navigateToMain();
-                } else {
-                    Toast.makeText(this, "Erreur lors de la création du compte", Toast.LENGTH_SHORT).show();
-                }
-            });
-        });
     }
 
     private void navigateToMain() {
@@ -116,11 +122,5 @@ public class RegisterActivity extends AppCompatActivity {
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
         finish();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        executor.shutdown();
     }
 }

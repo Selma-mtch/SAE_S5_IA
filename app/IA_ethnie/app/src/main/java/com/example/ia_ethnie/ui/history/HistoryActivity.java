@@ -7,6 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
@@ -15,10 +16,11 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.ia_ethnie.R;
-import com.example.ia_ethnie.data.database.AppDatabase;
-import com.example.ia_ethnie.data.model.Prediction;
 import com.example.ia_ethnie.databinding.ActivityHistoryBinding;
 import com.example.ia_ethnie.utils.SessionManager;
+import com.google.firebase.firestore.DocumentSnapshot;
+import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.Query;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
@@ -26,16 +28,24 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class HistoryActivity extends AppCompatActivity {
     private ActivityHistoryBinding binding;
-    private AppDatabase database;
+    private FirebaseFirestore db;
     private SessionManager sessionManager;
     private HistoryAdapter adapter;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private List<Prediction> predictions = new ArrayList<>();
+    private List<PredictionItem> predictions = new ArrayList<>();
+
+    // Classe interne pour stocker les données de prédiction
+    private static class PredictionItem {
+        String documentId;
+        String localImagePath;
+        int age;
+        String gender;
+        String ethnicity;
+        String modelType;
+        long createdAt;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,7 +53,7 @@ public class HistoryActivity extends AppCompatActivity {
         binding = ActivityHistoryBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
 
-        database = AppDatabase.getInstance(this);
+        db = FirebaseFirestore.getInstance();
         sessionManager = new SessionManager(this);
 
         setupRecyclerView();
@@ -71,49 +81,93 @@ public class HistoryActivity extends AppCompatActivity {
     }
 
     private void loadHistory() {
-        executor.execute(() -> {
-            List<Prediction> loadedPredictions = database.predictionDao()
-                    .findByUserId(sessionManager.getUserId());
+        String userId = sessionManager.getUserId();
+        if (userId == null) {
+            showEmptyState();
+            return;
+        }
 
-            runOnUiThread(() -> {
-                predictions = loadedPredictions;
-                adapter.notifyDataSetChanged();
+        db.collection("predictions")
+                .whereEqualTo("userId", userId)
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .get()
+                .addOnSuccessListener(querySnapshot -> {
+                    predictions.clear();
 
-                if (predictions.isEmpty()) {
-                    binding.tvEmpty.setVisibility(View.VISIBLE);
-                    binding.recyclerView.setVisibility(View.GONE);
-                } else {
-                    binding.tvEmpty.setVisibility(View.GONE);
-                    binding.recyclerView.setVisibility(View.VISIBLE);
-                }
-            });
-        });
+                    for (DocumentSnapshot doc : querySnapshot.getDocuments()) {
+                        PredictionItem item = new PredictionItem();
+                        item.documentId = doc.getId();
+                        item.localImagePath = doc.getString("localImagePath");
+
+                        // Gérer les types numériques (Long vs Integer)
+                        Long ageLong = doc.getLong("age");
+                        item.age = ageLong != null ? ageLong.intValue() : 0;
+
+                        item.gender = doc.getString("gender");
+                        item.ethnicity = doc.getString("ethnicity");
+                        item.modelType = doc.getString("modelType");
+
+                        Long createdAtLong = doc.getLong("createdAt");
+                        item.createdAt = createdAtLong != null ? createdAtLong : 0;
+
+                        predictions.add(item);
+                    }
+
+                    adapter.notifyDataSetChanged();
+
+                    if (predictions.isEmpty()) {
+                        showEmptyState();
+                    } else {
+                        binding.tvEmpty.setVisibility(View.GONE);
+                        binding.recyclerView.setVisibility(View.VISIBLE);
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Toast.makeText(this, "Erreur de chargement", Toast.LENGTH_SHORT).show();
+                    showEmptyState();
+                });
+    }
+
+    private void showEmptyState() {
+        binding.tvEmpty.setVisibility(View.VISIBLE);
+        binding.recyclerView.setVisibility(View.GONE);
     }
 
     private void clearHistory() {
-        executor.execute(() -> {
-            database.predictionDao().deleteAllByUser(sessionManager.getUserId());
-            runOnUiThread(() -> {
-                predictions.clear();
-                adapter.notifyDataSetChanged();
-                binding.tvEmpty.setVisibility(View.VISIBLE);
-                binding.recyclerView.setVisibility(View.GONE);
-            });
-        });
+        String userId = sessionManager.getUserId();
+        if (userId == null) return;
+
+        // Supprimer tous les documents de l'utilisateur
+        db.collection("predictions")
+                .whereEqualTo("userId", userId)
+                .get()
+                .addOnSuccessListener(querySnapshot -> {
+                    for (DocumentSnapshot doc : querySnapshot.getDocuments()) {
+                        doc.getReference().delete();
+                    }
+                    predictions.clear();
+                    adapter.notifyDataSetChanged();
+                    showEmptyState();
+                    Toast.makeText(this, "Historique supprimé", Toast.LENGTH_SHORT).show();
+                })
+                .addOnFailureListener(e -> {
+                    Toast.makeText(this, "Erreur lors de la suppression", Toast.LENGTH_SHORT).show();
+                });
     }
 
-    private void deletePrediction(Prediction prediction, int position) {
-        executor.execute(() -> {
-            database.predictionDao().delete(prediction);
-            runOnUiThread(() -> {
-                predictions.remove(position);
-                adapter.notifyItemRemoved(position);
-                if (predictions.isEmpty()) {
-                    binding.tvEmpty.setVisibility(View.VISIBLE);
-                    binding.recyclerView.setVisibility(View.GONE);
-                }
-            });
-        });
+    private void deletePrediction(PredictionItem prediction, int position) {
+        db.collection("predictions").document(prediction.documentId)
+                .delete()
+                .addOnSuccessListener(aVoid -> {
+                    predictions.remove(position);
+                    adapter.notifyItemRemoved(position);
+                    if (predictions.isEmpty()) {
+                        showEmptyState();
+                    }
+                })
+                .addOnFailureListener(e -> {
+                    Toast.makeText(this, "Erreur lors de la suppression", Toast.LENGTH_SHORT).show();
+                });
     }
 
     private class HistoryAdapter extends RecyclerView.Adapter<HistoryAdapter.ViewHolder> {
@@ -128,25 +182,31 @@ public class HistoryActivity extends AppCompatActivity {
 
         @Override
         public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-            Prediction prediction = predictions.get(position);
+            PredictionItem prediction = predictions.get(position);
 
-            // Image
-            File imageFile = new File(prediction.getImagePath());
-            if (imageFile.exists()) {
-                holder.ivImage.setImageBitmap(BitmapFactory.decodeFile(prediction.getImagePath()));
+            // Image locale
+            if (prediction.localImagePath != null) {
+                File imageFile = new File(prediction.localImagePath);
+                if (imageFile.exists()) {
+                    holder.ivImage.setImageBitmap(BitmapFactory.decodeFile(prediction.localImagePath));
+                } else {
+                    holder.ivImage.setImageResource(R.drawable.ic_face_scan);
+                }
+            } else {
+                holder.ivImage.setImageResource(R.drawable.ic_face_scan);
             }
 
             // Infos
-            holder.tvAge.setText(prediction.getPredictedAge() + " ans");
-            holder.tvGender.setText(prediction.getPredictedGender());
-            holder.tvEthnicity.setText(prediction.getPredictedEthnicity());
+            holder.tvAge.setText(prediction.age + " ans");
+            holder.tvGender.setText(prediction.gender != null ? prediction.gender : "--");
+            holder.tvEthnicity.setText(prediction.ethnicity != null ? prediction.ethnicity : "--");
 
             // Date
             SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRENCH);
-            holder.tvDate.setText(sdf.format(new Date(prediction.getCreatedAt())));
+            holder.tvDate.setText(sdf.format(new Date(prediction.createdAt)));
 
             // Modèle
-            holder.tvModel.setText(prediction.getModelType());
+            holder.tvModel.setText(prediction.modelType != null ? prediction.modelType : "N/A");
 
             // Suppression
             holder.btnDelete.setOnClickListener(v -> {
@@ -181,11 +241,5 @@ public class HistoryActivity extends AppCompatActivity {
                 btnDelete = view.findViewById(R.id.btnDelete);
             }
         }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        executor.shutdown();
     }
 }
