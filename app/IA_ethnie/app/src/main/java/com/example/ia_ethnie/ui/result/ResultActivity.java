@@ -79,25 +79,25 @@ public class ResultActivity extends AppCompatActivity {
 
     private void displayResult(FaceAnalyzer.PredictionResult result) {
         // Âge
-        binding.tvAge.setText(String.valueOf(result.age));
+        binding.tvAge.setText(result.age + " ans");
         binding.tvAgeConfidence.setText(String.format(Locale.FRENCH,
-                "Confiance: %.1f%%", result.ageConfidence * 100));
+                "%.0f%%", result.ageConfidence * 100));
         binding.progressAge.setProgress((int) (result.ageConfidence * 100));
 
         // Genre
         binding.tvGender.setText(result.gender);
         binding.tvGenderConfidence.setText(String.format(Locale.FRENCH,
-                "Confiance: %.1f%%", result.genderConfidence * 100));
+                "%.0f%%", result.genderConfidence * 100));
         binding.progressGender.setProgress((int) (result.genderConfidence * 100));
 
         // Ethnicité
         binding.tvEthnicity.setText(result.ethnicity);
         binding.tvEthnicityConfidence.setText(String.format(Locale.FRENCH,
-                "Confiance: %.1f%%", result.ethnicityConfidence * 100));
+                "%.0f%%", result.ethnicityConfidence * 100));
         binding.progressEthnicity.setProgress((int) (result.ethnicityConfidence * 100));
 
         // Type de modèle
-        binding.tvModelType.setText("Modèle: " + result.modelType.name());
+        binding.tvModelType.setText(result.modelType.name());
     }
 
     private void saveResult() {
@@ -121,7 +121,7 @@ public class ResultActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 Toast.makeText(this, "Résultat sauvegardé!", Toast.LENGTH_SHORT).show();
                 binding.btnSave.setEnabled(false);
-                binding.btnSave.setText("Sauvegardé");
+                binding.btnSave.setAlpha(0.5f);
             });
         });
     }

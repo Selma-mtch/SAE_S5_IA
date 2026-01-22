@@ -148,9 +148,9 @@ public class CameraActivity extends AppCompatActivity {
             FaceAnalyzer.PredictionResult result = faceAnalyzer.analyze(bitmap);
 
             runOnUiThread(() -> {
-                binding.tvRealtimeAge.setText("Âge: " + result.age);
-                binding.tvRealtimeGender.setText("Genre: " + result.gender);
-                binding.tvRealtimeEthnicity.setText("Ethnicité: " + result.ethnicity);
+                binding.tvRealtimeAge.setText(String.valueOf(result.age));
+                binding.tvRealtimeGender.setText(result.gender);
+                binding.tvRealtimeEthnicity.setText(result.ethnicity);
             });
         }
         image.close();
