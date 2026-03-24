@@ -160,33 +160,102 @@ public class FaceAnalyzer {
 
     private PredictionResult analyzeWithMultiTaskModel(ByteBuffer inputBuffer) {
         if (multiTaskInterpreter == null) {
-            // Mode démo si pas de modèle
             return createDemoResult();
         }
 
-        // Sorties pour le modèle multi-tâches
+        // Detecter les sorties par leur NOM de tenseur (contient "age", "gender", "ethnicity")
+        // et en fallback par leur shape
+        int outputCount = multiTaskInterpreter.getOutputTensorCount();
+
+        int ageIdx = -1, genderIdx = -1, ethIdx = -1;
+
+        // D'abord essayer par nom
+        for (int i = 0; i < outputCount; i++) {
+            String name = multiTaskInterpreter.getOutputTensor(i).name().toLowerCase();
+            if (name.contains("age")) {
+                ageIdx = i;
+            } else if (name.contains("gender")) {
+                genderIdx = i;
+            } else if (name.contains("ethnic")) {
+                ethIdx = i;
+            }
+        }
+
+        // Fallback par shape si les noms n'ont pas marche
+        if (ageIdx == -1 || genderIdx == -1 || ethIdx == -1) {
+            for (int i = 0; i < outputCount; i++) {
+                int[] shape = multiTaskInterpreter.getOutputTensor(i).shape();
+                if (shape.length == 2 && shape[1] == NUM_ETHNICITY_CLASSES && ethIdx == -1) {
+                    ethIdx = i;
+                }
+            }
+            // Les deux (1,1) restants : on log les valeurs pour debug
+            for (int i = 0; i < outputCount; i++) {
+                if (i == ethIdx) continue;
+                int[] shape = multiTaskInterpreter.getOutputTensor(i).shape();
+                if (shape.length == 2 && shape[1] == 1) {
+                    if (ageIdx == -1) ageIdx = i;
+                    else if (genderIdx == -1) genderIdx = i;
+                }
+            }
+        }
+
+        if (ageIdx == -1) ageIdx = 0;
+        if (genderIdx == -1) genderIdx = 1;
+        if (ethIdx == -1) ethIdx = 2;
+
+        // Log pour debug
+        android.util.Log.d("FaceAnalyzer", "Output mapping -> age=" + ageIdx
+                + " gender=" + genderIdx + " ethnicity=" + ethIdx);
+        for (int i = 0; i < outputCount; i++) {
+            android.util.Log.d("FaceAnalyzer", "Output " + i
+                    + ": name=" + multiTaskInterpreter.getOutputTensor(i).name()
+                    + " shape=" + java.util.Arrays.toString(multiTaskInterpreter.getOutputTensor(i).shape()));
+        }
+
         float[][] ageOutput = new float[1][1];
-        float[][] genderOutput = new float[1][NUM_GENDER_CLASSES];
+        float[][] genderOutput = new float[1][1];
         float[][] ethnicityOutput = new float[1][NUM_ETHNICITY_CLASSES];
 
         Object[] inputs = {inputBuffer};
         java.util.Map<Integer, Object> outputs = new java.util.HashMap<>();
-        outputs.put(0, ageOutput);
-        outputs.put(1, genderOutput);
-        outputs.put(2, ethnicityOutput);
+        outputs.put(ageIdx, ageOutput);
+        outputs.put(genderIdx, genderOutput);
+        outputs.put(ethIdx, ethnicityOutput);
 
         multiTaskInterpreter.runForMultipleInputsOutputs(inputs, outputs);
 
+        android.util.Log.d("FaceAnalyzer", "Raw age=" + ageOutput[0][0]
+                + " gender=" + genderOutput[0][0]
+                + " ethnicity=" + java.util.Arrays.toString(ethnicityOutput[0]));
+
+        // Si age ressemble a une sigmoid (0-1) et gender a un age (>1),
+        // ils sont inverses -> on swap
+        if (ageOutput[0][0] >= 0.0f && ageOutput[0][0] <= 1.0f
+                && genderOutput[0][0] > 1.0f) {
+            android.util.Log.w("FaceAnalyzer", "Age/Gender swapped, correcting...");
+            float[][] temp = ageOutput;
+            ageOutput = genderOutput;
+            genderOutput = temp;
+        }
+
+        // Age : valeur brute de la regression
         int predictedAge = Math.round(ageOutput[0][0]);
-        int genderIndex = argMax(genderOutput[0]);
+
+        // Gender : sigmoid -> 0 = Homme, 1 = Femme
+        float genderSigmoid = genderOutput[0][0];
+        int genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
+        float genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
+
+        // Ethnicity : softmax -> argmax
         int ethnicityIndex = argMax(ethnicityOutput[0]);
 
         return new PredictionResult(
                 Math.max(0, Math.min(100, predictedAge)),
                 GENDER_LABELS[genderIndex],
                 ETHNICITY_LABELS[ethnicityIndex],
-                1.0f, // L'âge est une régression
-                genderOutput[0][genderIndex],
+                1.0f,
+                genderConf,
                 ethnicityOutput[0][ethnicityIndex],
                 ModelType.MULTI_TASK
         );

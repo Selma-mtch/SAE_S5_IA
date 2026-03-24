@@ -133,7 +133,7 @@ def prepare_data(images, labels):
 
 
 # ============================================================
-# 3. DATA AUGMENTATION
+# 3. DATA AUGMENTATION (via tf.data, pas dans le modele)
 # ============================================================
 
 def random_90_rotation(x):
@@ -141,25 +141,40 @@ def random_90_rotation(x):
     return tf.image.rot90(x, k)
 
 
-def build_augmentation():
-    return tf.keras.Sequential([
-        layers.Lambda(random_90_rotation),
-        layers.RandomRotation(0.5),
-        layers.RandomZoom(0.1),
-        layers.RandomTranslation(0.05, 0.05),
-    ])
+def augment_image(image):
+    """Applique l'augmentation sur une image."""
+    image = random_90_rotation(image)
+    image = tf.image.random_brightness(image, 0.1)
+    return image
+
+
+def create_augmented_dataset(X, y_dict, batch_size=128):
+    """Cree un tf.data.Dataset avec augmentation."""
+    dataset = tf.data.Dataset.from_tensor_slices((X, y_dict))
+
+    def augment_fn(image, labels):
+        image = random_90_rotation(image)
+        # Random rotation +-180
+        angle = tf.random.uniform([], -0.5, 0.5)
+        image = tf.keras.layers.RandomRotation(0.5)(tf.expand_dims(image, 0), training=True)[0]
+        return image, labels
+
+    dataset = dataset.shuffle(len(X))
+    dataset = dataset.map(augment_fn, num_parallel_calls=tf.data.AUTOTUNE)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    return dataset
 
 
 # ============================================================
-# 4. MODELE MULTI-TACHE
+# 4. MODELE MULTI-TACHE (un seul modele, sans augmentation dedans)
 # ============================================================
 
-def build_model_with_augmentation():
-    """Modele avec augmentation (pour l'entrainement)."""
+def build_model():
+    """Modele unique pour entrainement ET export TFLite."""
     input_img = layers.Input(shape=(128, 128, 1))
 
-    augmentation = build_augmentation()
-    x = augmentation(input_img)
+    x = input_img
 
     # Bloc CNN 1
     x = layers.Conv2D(32, (3, 3), padding="same")(x)
@@ -215,72 +230,12 @@ def build_model_with_augmentation():
     return model
 
 
-def build_model_inference():
-    """Modele SANS augmentation (pour l'export TFLite)."""
-    input_img = layers.Input(shape=(128, 128, 1))
-
-    x = input_img  # PAS d'augmentation
-
-    # Bloc CNN 1
-    x = layers.Conv2D(32, (3, 3), padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
-    x = layers.MaxPooling2D((2, 2))(x)
-
-    # Bloc CNN 2
-    x = layers.Conv2D(64, (3, 3), padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
-    x = layers.MaxPooling2D((2, 2))(x)
-
-    # Bloc CNN 3
-    x = layers.Conv2D(128, (3, 3), padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
-    x = layers.MaxPooling2D((2, 2))(x)
-
-    # Bloc CNN 4
-    x = layers.Conv2D(256, (3, 3), padding="same")(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
-
-    # Global Pooling
-    x = layers.GlobalAveragePooling2D()(x)
-
-    # Features partagees
-    shared = layers.Dense(256, activation="relu")(x)
-    shared = layers.BatchNormalization()(shared)
-    shared = layers.Dropout(0.4)(shared)
-
-    # Branche AGE
-    age_branch = layers.Dense(128, activation="relu")(shared)
-    age_branch = layers.Dense(64, activation="relu")(age_branch)
-    age_output = layers.Dense(1, activation="linear", name="age")(age_branch)
-
-    # Branche GENDER
-    gender_branch = layers.Dense(128, activation="relu")(shared)
-    gender_branch = layers.Dropout(0.3)(gender_branch)
-    gender_output = layers.Dense(1, activation="sigmoid", name="gender")(gender_branch)
-
-    # Branche ETHNICITY
-    eth_branch = layers.Dense(256, activation="relu")(shared)
-    eth_branch = layers.Dense(128, activation="relu")(eth_branch)
-    eth_branch = layers.Dropout(0.5)(eth_branch)
-    ethnicity_output = layers.Dense(5, activation="softmax", name="ethnicity")(eth_branch)
-
-    model = models.Model(
-        inputs=input_img,
-        outputs=[age_output, gender_output, ethnicity_output]
-    )
-    return model
-
-
 # ============================================================
 # 5. ENTRAINEMENT
 # ============================================================
 
 def train_model(model, data, epochs=80, batch_size=128):
-    """Compile et entraine le modele."""
+    """Compile et entraine le modele avec augmentation via numpy."""
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
         loss={
@@ -312,9 +267,23 @@ def train_model(model, data, epochs=80, batch_size=128):
         ),
     ]
 
+    # Augmentation via numpy (rotations aleatoires de 90)
+    X_train = data["X_train"]
+    X_aug = X_train.copy()
+    for i in range(len(X_aug)):
+        k = np.random.randint(0, 4)
+        X_aug[i] = np.rot90(X_aug[i], k=k, axes=(0, 1))
+
+    X_combined = np.concatenate([X_train, X_aug], axis=0)
+    y_age_combined = np.concatenate([data["y_age_train"], data["y_age_train"]], axis=0)
+    y_gender_combined = np.concatenate([data["y_gender_train"], data["y_gender_train"]], axis=0)
+    y_eth_combined = np.concatenate([data["y_eth_train_cat"], data["y_eth_train_cat"]], axis=0)
+
+    print(f"Dataset augmente : {len(X_combined)} images (original + rotations)")
+
     history = model.fit(
-        data["X_train"],
-        {"age": data["y_age_train"], "gender": data["y_gender_train"], "ethnicity": data["y_eth_train_cat"]},
+        X_combined,
+        {"age": y_age_combined, "gender": y_gender_combined, "ethnicity": y_eth_combined},
         validation_data=(
             data["X_val"],
             {"age": data["y_age_val"], "gender": data["y_gender_val"], "ethnicity": data["y_eth_val_cat"]},
@@ -394,53 +363,23 @@ def save_plots(history, output_dir):
 # 7. EXPORT TENSORFLOW LITE
 # ============================================================
 
-def export_tflite(train_model_with_aug, output_path="model_multitask.tflite"):
+def export_tflite(model, output_path="model_multitask.tflite"):
     """
-    Cree un modele d'inference (sans augmentation),
-    copie les poids du modele entraine, et exporte en TFLite.
+    Exporte le modele directement en TFLite.
+    Pas besoin de modele separee puisque l'augmentation
+    n'est plus dans le modele.
     """
     print("\n===== EXPORT TFLITE =====")
 
-    # Creer le modele d'inference (sans data augmentation)
-    inference_model = build_model_inference()
-
-    # Copier les poids du modele entraine vers le modele d'inference
-    # On skip les couches d'augmentation (les premieres couches du modele d'entrainement)
-    train_layers = [l for l in train_model_with_aug.layers if not isinstance(l, (
-        tf.keras.Sequential,
-        layers.Lambda,
-        layers.RandomRotation,
-        layers.RandomZoom,
-        layers.RandomTranslation,
-    )) and l.name != "input_layer" and not l.name.startswith("sequential")]
-
-    inference_layers = [l for l in inference_model.layers if l.name != "input_layer"]
-
-    # Methode par nom de couche
-    weights_map = {}
-    for layer in train_model_with_aug.layers:
-        if layer.weights:
-            weights_map[layer.name] = layer.get_weights()
-
-    for layer in inference_model.layers:
-        if layer.name in weights_map:
-            layer.set_weights(weights_map[layer.name])
-            print(f"  Poids copies : {layer.name}")
-
-    # Verifier que le modele d'inference donne les memes resultats
-    print("\nVerification des poids copies...")
+    # Verification rapide que le modele fonctionne
     test_input = np.random.rand(1, 128, 128, 1).astype(np.float32)
-    out_train = train_model_with_aug(test_input, training=False)
-    out_infer = inference_model(test_input, training=False)
-
+    outputs = model(test_input, training=False)
+    print("Verification pre-export:")
     for i, name in enumerate(["age", "gender", "ethnicity"]):
-        diff = np.abs(out_train[i].numpy() - out_infer[i].numpy()).max()
-        print(f"  {name}: diff max = {diff:.8f}")
-        if diff > 1e-5:
-            print(f"  ATTENTION: difference significative pour {name} !")
+        print(f"  {name}: {outputs[i].numpy().flatten()}")
 
     # Conversion TFLite
-    converter = tf.lite.TFLiteConverter.from_keras_model(inference_model)
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.target_spec.supported_types = [tf.float16]
 
@@ -588,7 +527,7 @@ def main():
     print("\n" + "=" * 50)
     print("3. CONSTRUCTION DU MODELE")
     print("=" * 50)
-    model = build_model_with_augmentation()
+    model = build_model()
     model.summary()
 
     # 4. Entrainer
