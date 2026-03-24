@@ -128,23 +128,29 @@ print(f"Images chargées : {len(images)}")
 print(f"Shape des images : {images.shape}")
 
 # %% [code]
-"""## 2. Préparation des données"""
+"""## 2. Préparation des données (Age + Genre + Ethnicité)"""
 
 X = images
+y_age = labels[:, 0].astype('float32')
+y_gender = labels[:, 1].astype('float32')
 y_ethnicity = labels[:, 2]
 
 print(f"Shape X : {X.shape}")
+print(f"Age : min={y_age.min()}, max={y_age.max()}, mean={y_age.mean():.1f}")
+print(f"Gender : {np.sum(y_gender == 0)} hommes, {np.sum(y_gender == 1)} femmes")
 
-# Distribution des classes
 eth_labels = ['Blanc', 'Noir', 'Asiatique', 'Indien', 'Autre']
-print("\nDistribution des classes :")
+print("\nDistribution ethnicité :")
 for i in range(5):
     count = np.sum(y_ethnicity == i)
     print(f"  {eth_labels[i]} : {count}")
 
-# Split train/test (80/20) stratifié
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y_ethnicity,
+# Split train/test (80/20) stratifié sur l'ethnicité
+X_train, X_test, \
+y_age_train, y_age_test, \
+y_gender_train, y_gender_test, \
+y_eth_train, y_eth_test = train_test_split(
+    X, y_age, y_gender, y_ethnicity,
     test_size=0.2,
     random_state=SEED,
     stratify=y_ethnicity
@@ -156,19 +162,16 @@ X_test = X_test.astype('float32') / 255.0
 
 print(f"\nX_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
-print(f"X_train min/max : {X_train.min():.2f} / {X_train.max():.2f}")
 
-# One-hot encoding
-y_train_cat = to_categorical(y_train, num_classes=5)
-y_test_cat = to_categorical(y_test, num_classes=5)
+# One-hot encoding ethnicité
+y_eth_train_cat = to_categorical(y_eth_train, num_classes=5)
+y_eth_test_cat = to_categorical(y_eth_test, num_classes=5)
 
-# Class weights pour gérer le déséquilibre
-class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-class_weight_dict = dict(enumerate(class_weights))
-
-print(f"\nClass weights :")
-for i, label in enumerate(eth_labels):
-    print(f"  {label} : {class_weight_dict[i]:.3f}")
+# Garder y_eth_train et y_eth_test pour les métriques
+y_train = y_eth_train
+y_test = y_eth_test
+y_train_cat = y_eth_train_cat
+y_test_cat = y_eth_test_cat
 
 # %% [code]
 """## 3. Construction du modèle - MobileNetV2 Transfer Learning (Baseline)"""
@@ -183,24 +186,47 @@ base_model = tf.keras.applications.MobileNetV2(
 # FREEZE COMPLET : on n'entraîne que le head
 base_model.trainable = False
 
-# Construction du modèle
-# Baseline : head modéré avec dropout. L'overfit léger est ATTENDU
-# car le backbone est frozen et il n'y a pas d'augmentation.
-# C'est justement ce que les modèles suivants viennent corriger.
+# Construction du modèle MULTI-TACHE (Age + Genre + Ethnicité)
 inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
 x = base_model(inputs, training=False)
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.BatchNormalization()(x)
-x = layers.Dense(128, activation='relu')(x)
-x = layers.Dropout(0.4)(x)
-outputs = layers.Dense(5, activation='softmax')(x)
 
-model = models.Model(inputs, outputs, name='Transfer_MobileNetV2_Base')
+# Features partagées
+shared = layers.Dense(256, activation='relu')(x)
+shared = layers.Dropout(0.4)(shared)
+
+# Branche AGE (régression)
+age_branch = layers.Dense(128, activation='relu')(shared)
+age_branch = layers.Dense(64, activation='relu')(age_branch)
+age_output = layers.Dense(1, activation='linear', name='age')(age_branch)
+
+# Branche GENRE (classification binaire)
+gender_branch = layers.Dense(128, activation='relu')(shared)
+gender_branch = layers.Dropout(0.3)(gender_branch)
+gender_output = layers.Dense(1, activation='sigmoid', name='gender')(gender_branch)
+
+# Branche ETHNICITÉ (5 classes)
+eth_branch = layers.Dense(128, activation='relu')(shared)
+eth_branch = layers.Dropout(0.4)(eth_branch)
+ethnicity_output = layers.Dense(5, activation='softmax', name='ethnicity')(eth_branch)
+
+model = models.Model(inputs, [age_output, gender_output, ethnicity_output],
+                     name='Transfer_MobileNetV2_Base')
 
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
+    loss={
+        'age': tf.keras.losses.Huber(delta=8.0),
+        'gender': 'binary_crossentropy',
+        'ethnicity': 'categorical_crossentropy',
+    },
+    loss_weights={'age': 0.4, 'gender': 1.0, 'ethnicity': 1.0},
+    metrics={
+        'age': ['mae'],
+        'gender': ['accuracy'],
+        'ethnicity': ['accuracy'],
+    }
 )
 
 model.summary()
@@ -213,9 +239,11 @@ print(f"Paramètres non-entraînables : {sum(tf.keras.backend.count_params(w) fo
 """## 4. Entraînement"""
 
 early_stop = EarlyStopping(
-    monitor='val_loss',
-    patience=3,
+    monitor='val_ethnicity_accuracy',
+    mode='max',
+    patience=10,
     restore_best_weights=True,
+    start_from_epoch=30,
     verbose=1
 )
 
@@ -227,37 +255,55 @@ reduce_lr = ReduceLROnPlateau(
     verbose=1
 )
 
+# Split manuel train/val pour multi-output
+X_tr, X_val, \
+y_age_tr, y_age_val, \
+y_gender_tr, y_gender_val, \
+y_eth_tr_cat, y_eth_val_cat = train_test_split(
+    X_train, y_age_train, y_gender_train, y_eth_train_cat,
+    test_size=0.2, random_state=SEED
+)
+
 print("\n" + "=" * 60)
 print("ENTRAÎNEMENT - MODÈLE 1 : BASELINE TRANSFER LEARNING")
 print("=" * 60)
 print("Configuration :")
 print("  - Base model : MobileNetV2 (frozen)")
-print("  - Head : GAP → BN → Dense(128) → Dropout(0.4) → Dense(5)")
+print("  - Tâches : Age (régression) + Genre (binaire) + Ethnicité (5 classes)")
 print("  - Learning rate : 0.001")
-print("  - EarlyStopping patience=3 (coupe avant que l'overfit s'installe)")
-print("  - Loss : categorical_crossentropy + class_weight")
-print("  - Batch size : 32")
-print("  - Max epochs : 25")
+print("  - Epochs : 50 (minimum 30)")
 
 history = model.fit(
-    X_train, y_train_cat,
-    epochs=25,
+    X_tr,
+    {'age': y_age_tr, 'gender': y_gender_tr, 'ethnicity': y_eth_tr_cat},
+    validation_data=(X_val, {'age': y_age_val, 'gender': y_gender_val, 'ethnicity': y_eth_val_cat}),
+    epochs=50,
     batch_size=32,
-    validation_split=0.2,
-    class_weight=class_weight_dict,
     callbacks=[early_stop, reduce_lr]
 )
 
 # %% [code]
 """## 5. Évaluation du modèle"""
 
-y_pred_proba = model.predict(X_test)
+predictions = model.predict(X_test)
+y_pred_age = predictions[0].flatten()
+y_pred_gender = (predictions[1].flatten() > 0.5).astype(int)
+y_pred_proba = predictions[2]
 y_pred = y_pred_proba.argmax(axis=1)
 
-loss, accuracy = model.evaluate(X_test, y_test_cat)
-print(f"\nAccuracy sur le test set : {accuracy*100:.2f}%")
+# Métriques Age
+age_mae = np.mean(np.abs(y_pred_age - y_age_test))
+print(f"AGE - MAE : {age_mae:.2f} ans")
 
-# AUC et AP
+# Métriques Genre
+gender_acc = np.mean(y_pred_gender == y_gender_test)
+print(f"GENRE - Accuracy : {gender_acc*100:.2f}%")
+
+# Métriques Ethnicité
+results = model.evaluate(X_test, {'age': y_age_test, 'gender': y_gender_test, 'ethnicity': y_eth_test_cat})
+accuracy = np.mean(y_pred == y_test)
+print(f"ETHNICITÉ - Accuracy : {accuracy*100:.2f}%")
+
 auc_score = roc_auc_score(y_test_cat, y_pred_proba, multi_class='ovr', average='macro')
 ap_score = average_precision_score(y_test_cat, y_pred_proba, average='macro')
 print(f"AUC (macro) : {auc_score:.4f}")
@@ -520,7 +566,48 @@ model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_transfer_base.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_transfer_base.keras")
 
 # %% [code]
-"""## 12. Résumé final"""
+"""## 12. Export TensorFlow Lite"""
+
+print("\n" + "=" * 60)
+print("EXPORT TENSORFLOW LITE")
+print("=" * 60)
+
+# Pas d'augmentation dans ce modèle → export direct
+tflite_path = os.path.join(OUTPUT_PATH, 'ethnicity_transfer_base.tflite')
+
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.target_spec.supported_types = [tf.float16]
+
+tflite_model = converter.convert()
+
+with open(tflite_path, 'wb') as f:
+    f.write(tflite_model)
+
+size_mb = os.path.getsize(tflite_path) / (1024 * 1024)
+print(f"Modèle TFLite sauvegardé : {tflite_path} ({size_mb:.1f} MB)")
+
+# Vérification du modèle TFLite
+print("\nVérification TFLite :")
+interpreter = tf.lite.Interpreter(model_path=tflite_path)
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+print(f"  Input  : shape={input_details[0]['shape']}, dtype={input_details[0]['dtype']}")
+print(f"  Output : shape={output_details[0]['shape']}, dtype={output_details[0]['dtype']}")
+
+# Test avec une image aléatoire
+test_input = np.random.rand(1, IMG_SIZE, IMG_SIZE, 3).astype(np.float32)
+interpreter.set_tensor(input_details[0]['index'], test_input)
+interpreter.invoke()
+test_output = interpreter.get_tensor(output_details[0]['index'])
+print(f"  Test prediction : {test_output.flatten()}")
+print("  TFLite OK !")
+
+# %% [code]
+"""## 13. Résumé final"""
 
 print("=" * 60)
 print("RÉSUMÉ FINAL - MODÈLE 1 : BASELINE TRANSFER LEARNING")

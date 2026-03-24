@@ -34,7 +34,6 @@ import seaborn as sns
 from PIL import Image
 from collections import Counter
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import (
     classification_report, confusion_matrix,
     precision_recall_fscore_support, roc_auc_score, average_precision_score
@@ -120,19 +119,28 @@ print(f"Images chargées : {len(images)}")
 print(f"Shape des images : {images.shape}")
 
 # %% [code]
-"""## 2. Préparation des données"""
+"""## 2. Préparation des données (Age + Genre + Ethnicité)"""
 
 X = images
+y_age = labels[:, 0].astype('float32')
+y_gender = labels[:, 1].astype('float32')
 y_ethnicity = labels[:, 2]
 
+print(f"Shape X : {X.shape}")
+print(f"Age : min={y_age.min()}, max={y_age.max()}, mean={y_age.mean():.1f}")
+print(f"Gender : {np.sum(y_gender == 0)} hommes, {np.sum(y_gender == 1)} femmes")
+
 eth_labels = ['Blanc', 'Noir', 'Asiatique', 'Indien', 'Autre']
-print("\nDistribution des classes :")
+print("\nDistribution ethnicité :")
 for i in range(5):
     count = np.sum(y_ethnicity == i)
     print(f"  {eth_labels[i]} : {count}")
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y_ethnicity,
+X_train, X_test, \
+y_age_train, y_age_test, \
+y_gender_train, y_gender_test, \
+y_eth_train, y_eth_test = train_test_split(
+    X, y_age, y_gender, y_ethnicity,
     test_size=0.2,
     random_state=SEED,
     stratify=y_ethnicity
@@ -144,15 +152,13 @@ X_test = X_test.astype('float32') / 255.0
 print(f"\nX_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
 
-y_train_cat = to_categorical(y_train, num_classes=5)
-y_test_cat = to_categorical(y_test, num_classes=5)
+y_eth_train_cat = to_categorical(y_eth_train, num_classes=5)
+y_eth_test_cat = to_categorical(y_eth_test, num_classes=5)
 
-class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-class_weight_dict = dict(enumerate(class_weights))
-
-print(f"\nClass weights :")
-for i, label in enumerate(eth_labels):
-    print(f"  {label} : {class_weight_dict[i]:.3f}")
+y_train = y_eth_train
+y_test = y_eth_test
+y_train_cat = y_eth_train_cat
+y_test_cat = y_eth_test_cat
 
 # %% [code]
 """## 3. Construction du modèle - MobileNetV2 Transfer Learning"""
@@ -170,16 +176,38 @@ inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
 x = base_model(inputs, training=False)
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.BatchNormalization()(x)
-x = layers.Dense(128, activation='relu')(x)
-x = layers.Dropout(0.3)(x)
-outputs = layers.Dense(5, activation='softmax')(x)
 
-model = models.Model(inputs, outputs, name='Transfer_MobileNetV2_Finetune')
+shared = layers.Dense(256, activation='relu')(x)
+shared = layers.Dropout(0.4)(shared)
+
+age_branch = layers.Dense(128, activation='relu')(shared)
+age_branch = layers.Dense(64, activation='relu')(age_branch)
+age_output = layers.Dense(1, activation='linear', name='age')(age_branch)
+
+gender_branch = layers.Dense(128, activation='relu')(shared)
+gender_branch = layers.Dropout(0.3)(gender_branch)
+gender_output = layers.Dense(1, activation='sigmoid', name='gender')(gender_branch)
+
+eth_branch = layers.Dense(128, activation='relu')(shared)
+eth_branch = layers.Dropout(0.4)(eth_branch)
+ethnicity_output = layers.Dense(5, activation='softmax', name='ethnicity')(eth_branch)
+
+model = models.Model(inputs, [age_output, gender_output, ethnicity_output],
+                     name='Transfer_MobileNetV2_Finetune')
 
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
+    loss={
+        'age': tf.keras.losses.Huber(delta=8.0),
+        'gender': 'binary_crossentropy',
+        'ethnicity': 'categorical_crossentropy',
+    },
+    loss_weights={'age': 0.4, 'gender': 1.0, 'ethnicity': 1.0},
+    metrics={
+        'age': ['mae'],
+        'gender': ['accuracy'],
+        'ethnicity': ['accuracy'],
+    }
 )
 
 model.summary()
@@ -189,9 +217,11 @@ print(f"\nPhase 1 - Paramètres entraînables : {sum(tf.keras.backend.count_para
 """## 4. Phase 1 : Entraînement du head seul"""
 
 early_stop = EarlyStopping(
-    monitor='val_loss',
-    patience=5,
+    monitor='val_ethnicity_accuracy',
+    mode='max',
+    patience=10,
     restore_best_weights=True,
+    start_from_epoch=30,
     verbose=1
 )
 
@@ -203,22 +233,30 @@ reduce_lr = ReduceLROnPlateau(
     verbose=1
 )
 
+X_tr, X_val, \
+y_age_tr, y_age_val, \
+y_gender_tr, y_gender_val, \
+y_eth_tr_cat, y_eth_val_cat = train_test_split(
+    X_train, y_age_train, y_gender_train, y_eth_train_cat,
+    test_size=0.2, random_state=SEED
+)
+
 print("\n" + "=" * 60)
 print("PHASE 1 : ENTRAÎNEMENT DU HEAD SEUL (MobileNetV2 frozen)")
 print("=" * 60)
 print("  - Learning rate : 0.001")
-print("  - Epochs max : 15")
+print("  - Epochs : 30 (minimum 15)")
 
 history1 = model.fit(
-    X_train, y_train_cat,
-    epochs=15,
+    X_tr,
+    {'age': y_age_tr, 'gender': y_gender_tr, 'ethnicity': y_eth_tr_cat},
+    validation_data=(X_val, {'age': y_age_val, 'gender': y_gender_val, 'ethnicity': y_eth_val_cat}),
+    epochs=50,
     batch_size=32,
-    validation_split=0.2,
-    class_weight=class_weight_dict,
     callbacks=[early_stop, reduce_lr]
 )
 
-print(f"\nPhase 1 terminée - Accuracy val : {max(history1.history['val_accuracy'])*100:.2f}%")
+print(f"\nPhase 1 terminée - Accuracy val : {max(history1.history['val_ethnicity_accuracy'])*100:.2f}%")
 
 # %% [code]
 """## 5. Phase 2 : Fine-tuning des dernières couches
@@ -234,18 +272,29 @@ for layer in base_model.layers[:-30]:
 
 # Recompiler avec un learning rate plus faible
 model.compile(
-    optimizer=Adam(learning_rate=1e-4),  # 10x plus faible
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
+    optimizer=Adam(learning_rate=1e-4),
+    loss={
+        'age': tf.keras.losses.Huber(delta=8.0),
+        'gender': 'binary_crossentropy',
+        'ethnicity': 'categorical_crossentropy',
+    },
+    loss_weights={'age': 0.4, 'gender': 1.0, 'ethnicity': 1.0},
+    metrics={
+        'age': ['mae'],
+        'gender': ['accuracy'],
+        'ethnicity': ['accuracy'],
+    }
 )
 
 print(f"Phase 2 - Paramètres entraînables : {sum(tf.keras.backend.count_params(w) for w in model.trainable_weights):,}")
 print(f"Couches débloquées : 30 dernières couches de MobileNetV2")
 
 early_stop2 = EarlyStopping(
-    monitor='val_loss',
-    patience=6,
+    monitor='val_ethnicity_accuracy',
+    mode='max',
+    patience=10,
     restore_best_weights=True,
+    start_from_epoch=30,
     verbose=1
 )
 
@@ -261,27 +310,36 @@ print("\n" + "=" * 60)
 print("PHASE 2 : FINE-TUNING (30 dernières couches débloquées)")
 print("=" * 60)
 print("  - Learning rate : 0.0001")
-print("  - Epochs max : 20")
+print("  - Epochs : 30 (minimum 15)")
 
 history2 = model.fit(
-    X_train, y_train_cat,
-    epochs=20,
+    X_tr,
+    {'age': y_age_tr, 'gender': y_gender_tr, 'ethnicity': y_eth_tr_cat},
+    validation_data=(X_val, {'age': y_age_val, 'gender': y_gender_val, 'ethnicity': y_eth_val_cat}),
+    epochs=50,
     batch_size=32,
-    validation_split=0.2,
-    class_weight=class_weight_dict,
     callbacks=[early_stop2, reduce_lr2]
 )
 
-print(f"\nPhase 2 terminée - Accuracy val : {max(history2.history['val_accuracy'])*100:.2f}%")
+print(f"\nPhase 2 terminée - Accuracy val : {max(history2.history['val_ethnicity_accuracy'])*100:.2f}%")
 
 # %% [code]
 """## 6. Évaluation du modèle"""
 
-y_pred_proba = model.predict(X_test)
+predictions = model.predict(X_test)
+y_pred_age = predictions[0].flatten()
+y_pred_gender = (predictions[1].flatten() > 0.5).astype(int)
+y_pred_proba = predictions[2]
 y_pred = y_pred_proba.argmax(axis=1)
 
-loss, accuracy = model.evaluate(X_test, y_test_cat)
-print(f"\nAccuracy sur le test set : {accuracy*100:.2f}%")
+age_mae = np.mean(np.abs(y_pred_age - y_age_test))
+print(f"AGE - MAE : {age_mae:.2f} ans")
+
+gender_acc = np.mean(y_pred_gender == y_gender_test)
+print(f"GENRE - Accuracy : {gender_acc*100:.2f}%")
+
+accuracy = np.mean(y_pred == y_test)
+print(f"ETHNICITÉ - Accuracy : {accuracy*100:.2f}%")
 
 auc_score = roc_auc_score(y_test_cat, y_pred_proba, multi_class='ovr', average='macro')
 ap_score = average_precision_score(y_test_cat, y_pred_proba, average='macro')
@@ -297,8 +355,8 @@ print(classification_report(y_test, y_pred, target_names=eth_labels))
 # Combiner les historiques des 2 phases
 all_loss = history1.history['loss'] + history2.history['loss']
 all_val_loss = history1.history['val_loss'] + history2.history['val_loss']
-all_acc = history1.history['accuracy'] + history2.history['accuracy']
-all_val_acc = history1.history['val_accuracy'] + history2.history['val_accuracy']
+all_acc = history1.history['ethnicity_accuracy'] + history2.history['ethnicity_accuracy']
+all_val_acc = history1.history['val_ethnicity_accuracy'] + history2.history['val_ethnicity_accuracy']
 phase1_epochs = len(history1.history['loss'])
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -461,10 +519,11 @@ for i, idx in enumerate(indices):
     img = X_test[idx]
     img_array = np.expand_dims(img, axis=0)
 
-    pred_proba = model.predict(img_array, verbose=0)
-    pred_class = np.argmax(pred_proba)
+    preds = model.predict(img_array, verbose=0)
+    pred_eth_proba = preds[2]
+    pred_class = np.argmax(pred_eth_proba)
     true_class = y_test[idx]
-    confidence = pred_proba[0][pred_class] * 100
+    confidence = pred_eth_proba[0][pred_class] * 100
 
     heatmap = make_gradcam_heatmap(img_array, model, base_model, pred_class)
     superimposed = display_gradcam(img, heatmap)
@@ -523,7 +582,46 @@ model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_transfer_finetune.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_transfer_finetune.keras")
 
 # %% [code]
-"""## 13. Résumé final"""
+"""## 13. Export TensorFlow Lite"""
+
+print("\n" + "=" * 60)
+print("EXPORT TENSORFLOW LITE")
+print("=" * 60)
+
+tflite_path = os.path.join(OUTPUT_PATH, 'ethnicity_transfer_finetune.tflite')
+
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.target_spec.supported_types = [tf.float16]
+
+tflite_model = converter.convert()
+
+with open(tflite_path, 'wb') as f:
+    f.write(tflite_model)
+
+size_mb = os.path.getsize(tflite_path) / (1024 * 1024)
+print(f"Modèle TFLite sauvegardé : {tflite_path} ({size_mb:.1f} MB)")
+
+# Vérification
+interpreter = tf.lite.Interpreter(model_path=tflite_path)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+print(f"  Input  : shape={input_details[0]['shape']}, dtype={input_details[0]['dtype']}")
+print(f"  Outputs : {len(output_details)}")
+for i, od in enumerate(output_details):
+    print(f"    Output {i} : shape={od['shape']}, dtype={od['dtype']}")
+
+test_input = np.random.rand(1, IMG_SIZE, IMG_SIZE, 3).astype(np.float32)
+interpreter.set_tensor(input_details[0]['index'], test_input)
+interpreter.invoke()
+for i, od in enumerate(output_details):
+    test_output = interpreter.get_tensor(od['index'])
+    print(f"  Output {i} prediction : {test_output.flatten()}")
+print("  TFLite OK !")
+
+# %% [code]
+"""## 14. Résumé final"""
 
 print("=" * 60)
 print("RÉSUMÉ FINAL - MODÈLE 2 : FINE-TUNING PROGRESSIF")
@@ -531,21 +629,23 @@ print("=" * 60)
 print(f"""
 Architecture :
   - Base model : MobileNetV2 (ImageNet)
-  - Head : GAP → Dense(256) → Dropout(0.4) → Dense(5, softmax)
+  - Head : GAP → BN → Dense(256) → Dropout(0.4) → 3 branches (age, gender, ethnicity)
   - Input : RGB 128x128
   - Paramètres totaux : {model.count_params():,}
 
 Entraînement :
   - Phase 1 : Head seul (lr=0.001) - {phase1_epochs} epochs
   - Phase 2 : Fine-tuning 30 dernières couches (lr=0.0001) - {len(history2.history['loss'])} epochs
-  - Loss : categorical_crossentropy + class_weight
+  - Loss : Huber(age) + BCE(gender) + CCE(ethnicity)
 
 CHANGEMENT vs Modèle 1 :
   → Fine-tuning des 30 dernières couches (Phase 2)
   → Learning rate réduit à 0.0001 pour le fine-tuning
 
 Résultats :
-  - Accuracy globale : {accuracy*100:.2f}%
+  - Age MAE : {age_mae:.2f} ans
+  - Genre Accuracy : {gender_acc*100:.2f}%
+  - Ethnicité Accuracy : {accuracy*100:.2f}%
   - AUC (macro) : {auc_score:.4f}
   - AP (macro) : {ap_score:.4f}
 """)

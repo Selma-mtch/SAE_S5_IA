@@ -22,6 +22,7 @@ public class FaceAnalyzer {
     private Interpreter ageInterpreter;
     private Interpreter genderInterpreter;
     private Interpreter multiTaskInterpreter;
+    private Interpreter transferInterpreter;
 
     private GpuDelegate gpuDelegate;
     private boolean useGpu = false;
@@ -102,6 +103,13 @@ public class FaceAnalyzer {
                 // Modèle genre non disponible
             }
 
+            try {
+                transferInterpreter = new Interpreter(
+                        loadModelFile(context, "model_transfer.tflite"), options);
+            } catch (IOException e) {
+                // Modèle transfer non disponible
+            }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -126,19 +134,23 @@ public class FaceAnalyzer {
 
     public PredictionResult analyze(Bitmap bitmap) {
         Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true);
-        ByteBuffer inputBuffer = preprocessImage(resizedBitmap);
 
         switch (currentModelType) {
             case SPECIALIZED:
-                return analyzeWithSpecializedModels(inputBuffer);
+                return analyzeWithSpecializedModels(resizedBitmap);
             case TRANSFER:
+                return analyzeWithTransferModel(preprocessRGB(resizedBitmap));
             case MULTI_TASK:
             default:
-                return analyzeWithMultiTaskModel(inputBuffer);
+                return analyzeWithMultiTaskModel(preprocessGrayscale(resizedBitmap));
         }
     }
 
-    private ByteBuffer preprocessImage(Bitmap bitmap) {
+    /**
+     * Preprocessing grayscale [0, 1] pour MULTI_TASK et SPECIALIZED.
+     * 1 canal, shape: (1, 128, 128, 1)
+     */
+    private ByteBuffer preprocessGrayscale(Bitmap bitmap) {
         ByteBuffer buffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 4);
         buffer.order(ByteOrder.nativeOrder());
 
@@ -149,9 +161,33 @@ public class FaceAnalyzer {
             int r = (pixel >> 16) & 0xFF;
             int g = (pixel >> 8) & 0xFF;
             int b = pixel & 0xFF;
-            // Conversion en niveaux de gris et normalisation [0, 1]
             float gray = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
             buffer.putFloat(gray);
+        }
+
+        buffer.rewind();
+        return buffer;
+    }
+
+    /**
+     * Preprocessing RGB [-1, 1] pour TRANSFER (EfficientNet preprocess_input).
+     * 3 canaux, shape: (1, 128, 128, 3)
+     */
+    private ByteBuffer preprocessRGB(Bitmap bitmap) {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * 4);
+        buffer.order(ByteOrder.nativeOrder());
+
+        int[] pixels = new int[INPUT_SIZE * INPUT_SIZE];
+        bitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE);
+
+        for (int pixel : pixels) {
+            int r = (pixel >> 16) & 0xFF;
+            int g = (pixel >> 8) & 0xFF;
+            int b = pixel & 0xFF;
+            // EfficientNet preprocess_input : normalise en [-1, 1]
+            buffer.putFloat(r / 127.5f - 1.0f);
+            buffer.putFloat(g / 127.5f - 1.0f);
+            buffer.putFloat(b / 127.5f - 1.0f);
         }
 
         buffer.rewind();
@@ -261,7 +297,84 @@ public class FaceAnalyzer {
         );
     }
 
-    private PredictionResult analyzeWithSpecializedModels(ByteBuffer inputBuffer) {
+    private PredictionResult analyzeWithTransferModel(ByteBuffer inputBuffer) {
+        if (transferInterpreter == null) {
+            return createDemoResult();
+        }
+
+        int outputCount = transferInterpreter.getOutputTensorCount();
+
+        int ageIdx = -1, genderIdx = -1, ethIdx = -1;
+
+        for (int i = 0; i < outputCount; i++) {
+            String name = transferInterpreter.getOutputTensor(i).name().toLowerCase();
+            if (name.contains("age")) ageIdx = i;
+            else if (name.contains("gender")) genderIdx = i;
+            else if (name.contains("ethnic")) ethIdx = i;
+        }
+
+        if (ageIdx == -1 || genderIdx == -1 || ethIdx == -1) {
+            for (int i = 0; i < outputCount; i++) {
+                int[] shape = transferInterpreter.getOutputTensor(i).shape();
+                if (shape.length == 2 && shape[1] == NUM_ETHNICITY_CLASSES && ethIdx == -1) {
+                    ethIdx = i;
+                }
+            }
+            for (int i = 0; i < outputCount; i++) {
+                if (i == ethIdx) continue;
+                int[] shape = transferInterpreter.getOutputTensor(i).shape();
+                if (shape.length == 2 && shape[1] == 1) {
+                    if (ageIdx == -1) ageIdx = i;
+                    else if (genderIdx == -1) genderIdx = i;
+                }
+            }
+        }
+
+        if (ageIdx == -1) ageIdx = 0;
+        if (genderIdx == -1) genderIdx = 1;
+        if (ethIdx == -1) ethIdx = 2;
+
+        float[][] ageOutput = new float[1][1];
+        float[][] genderOutput = new float[1][1];
+        float[][] ethnicityOutput = new float[1][NUM_ETHNICITY_CLASSES];
+
+        Object[] inputs = {inputBuffer};
+        java.util.Map<Integer, Object> outputs = new java.util.HashMap<>();
+        outputs.put(ageIdx, ageOutput);
+        outputs.put(genderIdx, genderOutput);
+        outputs.put(ethIdx, ethnicityOutput);
+
+        transferInterpreter.runForMultipleInputsOutputs(inputs, outputs);
+
+        android.util.Log.d("FaceAnalyzer", "[TRANSFER] Raw age=" + ageOutput[0][0]
+                + " gender=" + genderOutput[0][0]
+                + " ethnicity=" + java.util.Arrays.toString(ethnicityOutput[0]));
+
+        if (ageOutput[0][0] >= 0.0f && ageOutput[0][0] <= 1.0f
+                && genderOutput[0][0] > 1.0f) {
+            float[][] temp = ageOutput;
+            ageOutput = genderOutput;
+            genderOutput = temp;
+        }
+
+        int predictedAge = Math.round(ageOutput[0][0]);
+        float genderSigmoid = genderOutput[0][0];
+        int genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
+        float genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
+        int ethnicityIndex = argMax(ethnicityOutput[0]);
+
+        return new PredictionResult(
+                Math.max(0, Math.min(100, predictedAge)),
+                GENDER_LABELS[genderIndex],
+                ETHNICITY_LABELS[ethnicityIndex],
+                1.0f,
+                genderConf,
+                ethnicityOutput[0][ethnicityIndex],
+                ModelType.TRANSFER
+        );
+    }
+
+    private PredictionResult analyzeWithSpecializedModels(Bitmap bitmap) {
         int predictedAge = 25;
         float ageConfidence = 0.0f;
         int genderIndex = 0;
@@ -269,29 +382,29 @@ public class FaceAnalyzer {
         int ethnicityIndex = 0;
         float ethnicityConfidence = 0.0f;
 
-        // Modèle âge
+        // Modèle âge (RGB [-1, 1])
         if (ageInterpreter != null) {
+            ByteBuffer rgbBuffer = preprocessRGB(bitmap);
             float[][] ageOutput = new float[1][1];
-            inputBuffer.rewind();
-            ageInterpreter.run(inputBuffer, ageOutput);
+            ageInterpreter.run(rgbBuffer, ageOutput);
             predictedAge = Math.round(ageOutput[0][0]);
             ageConfidence = 1.0f;
         }
 
-        // Modèle genre
+        // Modèle genre (grayscale [0, 1])
         if (genderInterpreter != null) {
+            ByteBuffer grayBuffer = preprocessGrayscale(bitmap);
             float[][] genderOutput = new float[1][NUM_GENDER_CLASSES];
-            inputBuffer.rewind();
-            genderInterpreter.run(inputBuffer, genderOutput);
+            genderInterpreter.run(grayBuffer, genderOutput);
             genderIndex = argMax(genderOutput[0]);
             genderConfidence = genderOutput[0][genderIndex];
         }
 
-        // Modèle ethnicité
+        // Modèle ethnicité (grayscale [0, 1])
         if (ethnicityInterpreter != null) {
+            ByteBuffer grayBuffer = preprocessGrayscale(bitmap);
             float[][] ethnicityOutput = new float[1][NUM_ETHNICITY_CLASSES];
-            inputBuffer.rewind();
-            ethnicityInterpreter.run(inputBuffer, ethnicityOutput);
+            ethnicityInterpreter.run(grayBuffer, ethnicityOutput);
             ethnicityIndex = argMax(ethnicityOutput[0]);
             ethnicityConfidence = ethnicityOutput[0][ethnicityIndex];
         }
@@ -341,6 +454,7 @@ public class FaceAnalyzer {
         if (ageInterpreter != null) ageInterpreter.close();
         if (genderInterpreter != null) genderInterpreter.close();
         if (multiTaskInterpreter != null) multiTaskInterpreter.close();
+        if (transferInterpreter != null) transferInterpreter.close();
         if (gpuDelegate != null) gpuDelegate.close();
     }
 

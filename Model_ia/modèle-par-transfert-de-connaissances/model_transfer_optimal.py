@@ -1,13 +1,13 @@
 # %% [code]
 # -*- coding: utf-8 -*-
 """
-# Modèle 5 : Architecture Optimale - EfficientNetB0
+# Modèle 5 : Architecture Optimale Multi-Tâches - EfficientNetB0
 
 **Entraînement sur Kaggle**
 
-**Changements vs Modèle 4 :** Tout est optimisé pour la performance maximale
+**Multi-tâches :** Prédiction simultanée de l'âge, du genre et de l'ethnicité
 
-1. **EfficientNetB0** au lieu de MobileNetV2
+1. **EfficientNetB0** comme backbone
    - Meilleur ratio accuracy/paramètres
    - Intègre déjà des SE blocks (Squeeze-and-Excitation)
    - Compound scaling optimisé
@@ -16,18 +16,20 @@
    - Normalisation [-1, 1] via preprocess_input
    - Correspond aux poids ImageNet pré-entraînés
 
-3. **Head renforcé**
-   - GAP → BN → Dense(512) → Dropout(0.4) → Dense(128) → Dropout(0.3) → Dense(5)
-   - Plus de capacité pour les 5 classes
+3. **Multi-head architecture**
+   - Shared trunk : GAP → BN → Dense(512) → Dropout(0.4)
+   - Age branch : Dense(128) → Dense(64) → Dense(1, linear)
+   - Gender branch : Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+   - Ethnicity branch : Dense(256) → Dense(128) → Dropout(0.3) → Dense(5, softmax)
 
-4. **3 phases de fine-tuning** au lieu de 2
+4. **3 phases de fine-tuning**
    - Phase 1 : head seul (lr=1e-3)
    - Phase 2 : top 20 couches (lr=1e-4)
    - Phase 3 : top 50 couches (lr=1e-5)
 
 5. **Mixed precision** (float16) pour accélérer le training
 
-6. **Label smoothing** (0.1) pour éviter la surconfiance
+6. **Focal Loss** avec label smoothing sur l'ethnicité
 
 **Dataset :** jangedoo/utkface-new
 
@@ -139,29 +141,36 @@ print(f"Images chargées : {len(images)}")
 print(f"Shape des images : {images.shape}")
 
 # %% [code]
-"""## 2. Préparation des données
+"""## 2. Préparation des données (multi-tâches)
 
-**CHANGEMENT :** Utilisation de preprocess_input d'EfficientNet (normalise en [-1, 1])
-au lieu de /255.
+**CHANGEMENT :** Extraction de y_age, y_gender, y_ethnicity.
+Utilisation de preprocess_input d'EfficientNet (normalise en [-1, 1]).
 """
 
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
 X = images
+y_age = labels[:, 0].astype('float32')
+y_gender = labels[:, 1].astype('float32')
 y_ethnicity = labels[:, 2]
 
 eth_labels = ['Blanc', 'Noir', 'Asiatique', 'Indien', 'Autre']
-print("\nDistribution des classes :")
+gender_labels = ['Homme', 'Femme']
+
+print("\nDistribution des classes (ethnicité) :")
 for i in range(5):
     count = np.sum(y_ethnicity == i)
     print(f"  {eth_labels[i]} : {count}")
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y_ethnicity,
-    test_size=0.2,
-    random_state=SEED,
-    stratify=y_ethnicity
-)
+print("\nDistribution du genre :")
+for i in range(2):
+    count = np.sum(y_gender == i)
+    print(f"  {gender_labels[i]} : {count}")
+
+print(f"\nAge : min={y_age.min():.0f}, max={y_age.max():.0f}, mean={y_age.mean():.1f}")
+
+X_train, X_test, y_age_train, y_age_test, y_gender_train, y_gender_test, y_eth_train, y_eth_test = train_test_split(
+    X, y_age, y_gender, y_ethnicity, test_size=0.2, random_state=SEED, stratify=y_ethnicity)
 
 # Preprocessing EfficientNet (normalise en [-1, 1])
 X_train = preprocess_input(X_train.astype('float32'))
@@ -171,8 +180,29 @@ print(f"\nX_train : {X_train.shape}")
 print(f"X_test : {X_test.shape}")
 print(f"X_train min/max : {X_train.min():.2f} / {X_train.max():.2f}")
 
-y_train_cat = to_categorical(y_train, num_classes=5)
-y_test_cat = to_categorical(y_test, num_classes=5)
+y_eth_train_cat = to_categorical(y_eth_train, num_classes=5)
+y_eth_test_cat = to_categorical(y_eth_test, num_classes=5)
+
+# Manual train/val split for training
+val_split = 0.2
+n_train = len(X_train)
+n_val = int(n_train * val_split)
+indices = np.random.RandomState(SEED).permutation(n_train)
+val_idx = indices[:n_val]
+tr_idx = indices[n_val:]
+
+X_tr = X_train[tr_idx]
+X_val = X_train[val_idx]
+y_age_tr = y_age_train[tr_idx]
+y_age_val = y_age_train[val_idx]
+y_gender_tr = y_gender_train[tr_idx]
+y_gender_val = y_gender_train[val_idx]
+y_eth_tr_cat = y_eth_train_cat[tr_idx]
+y_eth_val_cat = y_eth_train_cat[val_idx]
+
+print(f"\nTrain : {len(X_tr)} samples")
+print(f"Val   : {len(X_val)} samples")
+print(f"Test  : {len(X_test)} samples")
 
 # %% [code]
 """## 3. Focal Loss avec label smoothing"""
@@ -216,13 +246,13 @@ def focal_loss(gamma=2.0, alpha=None, label_smoothing=0.1):
     return focal_loss_fixed
 
 
-# Calcul des poids alpha
-class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+# Calcul des poids alpha (basé sur la distribution de l'ethnicité dans le train)
+class_weights = compute_class_weight('balanced', classes=np.unique(y_eth_train), y=y_eth_train)
 alpha_weights = list(class_weights)
 alpha_sum = sum(alpha_weights)
 alpha_weights = [w * 5 / alpha_sum for w in alpha_weights]
 
-print("Poids alpha pour Focal Loss :")
+print("Poids alpha pour Focal Loss (ethnicité) :")
 for i, label in enumerate(eth_labels):
     print(f"  {label} : {alpha_weights[i]:.3f}")
 
@@ -238,15 +268,16 @@ data_augmentation = tf.keras.Sequential([
 ], name='data_augmentation')
 
 # %% [code]
-"""## 5. Construction du modèle - EfficientNetB0
+"""## 5. Construction du modèle Multi-Tâches - EfficientNetB0
 
-**CHANGEMENTS vs Modèle 4 :**
-- EfficientNetB0 au lieu de MobileNetV2
-- Head renforcé (512 → 128 → 5)
-- BatchNormalization après GAP
+**Architecture multi-head :**
+- Shared trunk : GAP → BN → Dense(512) → Dropout(0.4)
+- Age branch : Dense(128) → Dense(64) → Dense(1, linear)
+- Gender branch : Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+- Ethnicity branch : Dense(256) → Dense(128) → Dropout(0.3) → Dense(5, softmax)
 """
 
-# CHANGEMENT : EfficientNetB0 au lieu de MobileNetV2
+# EfficientNetB0 backbone
 base_model = tf.keras.applications.EfficientNetB0(
     include_top=False,
     weights='imagenet',
@@ -258,23 +289,39 @@ base_model.trainable = False
 inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
 x = data_augmentation(inputs)
 x = base_model(x, training=False)
-
-# CHANGEMENT : Head renforcé
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.BatchNormalization()(x)
-x = layers.Dense(512, activation='relu')(x)
-x = layers.Dropout(0.4)(x)
-x = layers.Dense(128, activation='relu')(x)
-x = layers.Dropout(0.3)(x)
-# dtype='float32' obligatoire avec mixed precision pour la couche de sortie
-outputs = layers.Dense(5, activation='softmax', dtype='float32')(x)
 
-model = models.Model(inputs, outputs, name='Transfer_EfficientNetB0_Optimal')
+shared = layers.Dense(512, activation='relu')(x)
+shared = layers.Dropout(0.4)(shared)
+
+# Age branch
+age_branch = layers.Dense(128, activation='relu')(shared)
+age_branch = layers.Dense(64, activation='relu')(age_branch)
+age_output = layers.Dense(1, activation='linear', name='age', dtype='float32')(age_branch)
+
+# Gender branch
+gender_branch = layers.Dense(128, activation='relu')(shared)
+gender_branch = layers.Dropout(0.3)(gender_branch)
+gender_output = layers.Dense(1, activation='sigmoid', name='gender', dtype='float32')(gender_branch)
+
+# Ethnicity branch
+eth_branch = layers.Dense(256, activation='relu')(shared)
+eth_branch = layers.Dense(128, activation='relu')(eth_branch)
+eth_branch = layers.Dropout(0.3)(eth_branch)
+ethnicity_output = layers.Dense(5, activation='softmax', name='ethnicity', dtype='float32')(eth_branch)
+
+model = models.Model(inputs, [age_output, gender_output, ethnicity_output], name='Transfer_EfficientNetB0_Optimal')
 
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
-    loss=focal_loss(gamma=2.0, alpha=alpha_weights, label_smoothing=0.1),
-    metrics=['accuracy']
+    loss={
+        'age': tf.keras.losses.Huber(delta=8.0),
+        'gender': 'binary_crossentropy',
+        'ethnicity': focal_loss(gamma=2.0, alpha=alpha_weights, label_smoothing=0.1),
+    },
+    loss_weights={'age': 0.4, 'gender': 1.0, 'ethnicity': 1.0},
+    metrics={'age': ['mae'], 'gender': ['accuracy'], 'ethnicity': ['accuracy']}
 )
 
 model.summary()
@@ -285,25 +332,28 @@ print(f"Paramètres entraînables : {sum(tf.keras.backend.count_params(w) for w 
 # %% [code]
 """## 6. Phase 1 : Entraînement du head seul"""
 
-early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
+early_stop = EarlyStopping(monitor='val_ethnicity_accuracy', mode='max', patience=10, restore_best_weights=True, start_from_epoch=30, verbose=1)
 reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6, verbose=1)
 
 print("\n" + "=" * 60)
 print("PHASE 1 : HEAD SEUL (EfficientNetB0 frozen)")
 print("=" * 60)
 print("  - Learning rate : 0.001")
-print("  - Loss : Focal Loss (gamma=2.0, label_smoothing=0.1)")
+print("  - Loss : Huber (age) + BCE (gender) + Focal (ethnicity)")
+print("  - Epochs : 50")
 
 history1 = model.fit(
-    X_train, y_train_cat,
-    epochs=15,
+    X_tr, {'age': y_age_tr, 'gender': y_gender_tr, 'ethnicity': y_eth_tr_cat},
+    validation_data=(X_val, {'age': y_age_val, 'gender': y_gender_val, 'ethnicity': y_eth_val_cat}),
+    epochs=50,
     batch_size=32,
-    validation_split=0.2,
     callbacks=[early_stop, reduce_lr]
 )
 
-phase1_acc = max(history1.history['val_accuracy'])
-print(f"\nPhase 1 terminée - Accuracy val : {phase1_acc*100:.2f}%")
+phase1_eth_acc = max(history1.history['val_ethnicity_accuracy'])
+phase1_gender_acc = max(history1.history['val_gender_accuracy'])
+print(f"\nPhase 1 terminée - Ethnicity val acc : {phase1_eth_acc*100:.2f}%")
+print(f"Phase 1 terminée - Gender val acc : {phase1_gender_acc*100:.2f}%")
 
 # %% [code]
 """## 7. Phase 2 : Fine-tuning des couches hautes (top 20)"""
@@ -314,143 +364,123 @@ for layer in base_model.layers[:-20]:
 
 model.compile(
     optimizer=Adam(learning_rate=1e-4),
-    loss=focal_loss(gamma=2.0, alpha=alpha_weights, label_smoothing=0.1),
-    metrics=['accuracy']
+    loss={
+        'age': tf.keras.losses.Huber(delta=8.0),
+        'gender': 'binary_crossentropy',
+        'ethnicity': focal_loss(gamma=2.0, alpha=alpha_weights, label_smoothing=0.1),
+    },
+    loss_weights={'age': 0.4, 'gender': 1.0, 'ethnicity': 1.0},
+    metrics={'age': ['mae'], 'gender': ['accuracy'], 'ethnicity': ['accuracy']}
 )
 
 trainable_params = sum(tf.keras.backend.count_params(w) for w in model.trainable_weights)
 print(f"Phase 2 - Paramètres entraînables : {trainable_params:,}")
 print(f"Couches débloquées : 20 dernières couches d'EfficientNetB0")
 
-early_stop2 = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True, verbose=1)
+early_stop2 = EarlyStopping(monitor='val_ethnicity_accuracy', mode='max', patience=10, restore_best_weights=True, start_from_epoch=30, verbose=1)
 reduce_lr2 = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6, verbose=1)
 
 print("\n" + "=" * 60)
 print("PHASE 2 : FINE-TUNING TOP 20 COUCHES")
 print("=" * 60)
 print("  - Learning rate : 0.0001")
+print("  - Epochs : 50")
 
 history2 = model.fit(
-    X_train, y_train_cat,
-    epochs=20,
+    X_tr, {'age': y_age_tr, 'gender': y_gender_tr, 'ethnicity': y_eth_tr_cat},
+    validation_data=(X_val, {'age': y_age_val, 'gender': y_gender_val, 'ethnicity': y_eth_val_cat}),
+    epochs=50,
     batch_size=32,
-    validation_split=0.2,
     callbacks=[early_stop2, reduce_lr2]
 )
 
-phase2_acc = max(history2.history['val_accuracy'])
-print(f"\nPhase 2 terminée - Accuracy val : {phase2_acc*100:.2f}%")
+phase2_eth_acc = max(history2.history['val_ethnicity_accuracy'])
+phase2_gender_acc = max(history2.history['val_gender_accuracy'])
+print(f"\nPhase 2 terminée - Ethnicity val acc : {phase2_eth_acc*100:.2f}%")
+print(f"Phase 2 terminée - Gender val acc : {phase2_gender_acc*100:.2f}%")
+
+print("\n>>> PAS DE PHASE 3 (cause overfitting d'après tests)")
 
 # %% [code]
-"""## 8. Phase 3 : Fine-tuning profond (top 50 couches)
+"""## 9. Évaluation du modèle (multi-tâches)"""
 
-**CHANGEMENT CLÉ vs Modèle 4 :** 3ème phase de fine-tuning avec LR très faible.
-Permet d'adapter les features mid-level (textures, formes) aux visages.
-"""
+y_pred_age, y_pred_gender_proba, y_pred_eth_proba = model.predict(X_test)
 
-# Débloquer les 50 dernières couches
-for layer in base_model.layers:
-    layer.trainable = False
-for layer in base_model.layers[-50:]:
-    layer.trainable = True
+# Age evaluation
+age_mae = np.mean(np.abs(y_pred_age.flatten() - y_age_test))
+print(f"\n{'='*60}")
+print("ÉVALUATION MULTI-TÂCHES")
+print(f"{'='*60}")
+print(f"\n--- AGE ---")
+print(f"MAE sur le test set : {age_mae:.2f} ans")
 
-model.compile(
-    optimizer=Adam(learning_rate=1e-5),
-    loss=focal_loss(gamma=2.0, alpha=alpha_weights, label_smoothing=0.1),
-    metrics=['accuracy']
-)
+# Gender evaluation
+y_pred_gender = (y_pred_gender_proba.flatten() > 0.5).astype(int)
+gender_accuracy = np.mean(y_pred_gender == y_gender_test)
+print(f"\n--- GENRE ---")
+print(f"Accuracy sur le test set : {gender_accuracy*100:.2f}%")
+print(classification_report(y_gender_test.astype(int), y_pred_gender, target_names=gender_labels))
 
-trainable_params = sum(tf.keras.backend.count_params(w) for w in model.trainable_weights)
-print(f"Phase 3 - Paramètres entraînables : {trainable_params:,}")
+# Ethnicity evaluation
+y_pred_eth = y_pred_eth_proba.argmax(axis=1)
+eth_accuracy = np.mean(y_pred_eth == y_eth_test)
+print(f"\n--- ETHNICITÉ ---")
+print(f"Accuracy sur le test set : {eth_accuracy*100:.2f}%")
 
-early_stop3 = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True, verbose=1)
-reduce_lr3 = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1)
-
-print("\n" + "=" * 60)
-print("PHASE 3 : FINE-TUNING PROFOND (50 dernières couches)")
-print("=" * 60)
-print("  - Learning rate : 0.00001")
-
-history3 = model.fit(
-    X_train, y_train_cat,
-    epochs=25,
-    batch_size=32,
-    validation_split=0.2,
-    callbacks=[early_stop3, reduce_lr3]
-)
-
-phase3_acc = max(history3.history['val_accuracy'])
-print(f"\nPhase 3 terminée - Accuracy val : {phase3_acc*100:.2f}%")
-
-# %% [code]
-"""## 9. Évaluation du modèle"""
-
-y_pred_proba = model.predict(X_test)
-y_pred = y_pred_proba.argmax(axis=1)
-
-loss, accuracy = model.evaluate(X_test, y_test_cat)
-print(f"\nAccuracy sur le test set : {accuracy*100:.2f}%")
-
-auc_score = roc_auc_score(y_test_cat, y_pred_proba, multi_class='ovr', average='macro')
-ap_score = average_precision_score(y_test_cat, y_pred_proba, average='macro')
+auc_score = roc_auc_score(y_eth_test_cat, y_pred_eth_proba, multi_class='ovr', average='macro')
+ap_score = average_precision_score(y_eth_test_cat, y_pred_eth_proba, average='macro')
 print(f"AUC (macro) : {auc_score:.4f}")
 print(f"AP (macro) : {ap_score:.4f}")
 
-print("\nRapport de classification :")
-print(classification_report(y_test, y_pred, target_names=eth_labels))
+print("\nRapport de classification (ethnicité) :")
+print(classification_report(y_eth_test, y_pred_eth, target_names=eth_labels))
 
 # %% [code]
-"""## 10. Graphiques d'entraînement (3 phases combinées)"""
+"""## 10. Graphiques d'entraînement (2 phases combinées)"""
 
-all_loss = history1.history['loss'] + history2.history['loss'] + history3.history['loss']
-all_val_loss = history1.history['val_loss'] + history2.history['val_loss'] + history3.history['val_loss']
-all_acc = history1.history['accuracy'] + history2.history['accuracy'] + history3.history['accuracy']
-all_val_acc = history1.history['val_accuracy'] + history2.history['val_accuracy'] + history3.history['val_accuracy']
+all_eth_acc = history1.history['ethnicity_accuracy'] + history2.history['ethnicity_accuracy']
+all_val_eth_acc = history1.history['val_ethnicity_accuracy'] + history2.history['val_ethnicity_accuracy']
+all_loss = history1.history['loss'] + history2.history['loss']
+all_val_loss = history1.history['val_loss'] + history2.history['val_loss']
 
 phase1_end = len(history1.history['loss'])
-phase2_end = phase1_end + len(history2.history['loss'])
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Loss
 axes[0].plot(all_loss, label='Train', linewidth=2, marker='o', markersize=2)
 axes[0].plot(all_val_loss, label='Validation', linewidth=2, marker='s', markersize=2)
 axes[0].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 20)')
-axes[0].axvline(x=phase2_end - 0.5, color='orange', linestyle='--', alpha=0.7, label='Phase 3 (top 50)')
-axes[0].set_title('Focal Loss durant l\'entraînement', fontsize=12)
+axes[0].set_title('Loss totale durant l\'entraînement', fontsize=12)
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Loss')
 axes[0].legend(fontsize=9)
 axes[0].grid(True, alpha=0.3)
 
-# Accuracy
-axes[1].plot(all_acc, label='Train', linewidth=2, marker='o', markersize=2)
-axes[1].plot(all_val_acc, label='Validation', linewidth=2, marker='s', markersize=2)
+axes[1].plot(all_eth_acc, label='Train', linewidth=2, marker='o', markersize=2)
+axes[1].plot(all_val_eth_acc, label='Validation', linewidth=2, marker='s', markersize=2)
 axes[1].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 20)')
-axes[1].axvline(x=phase2_end - 0.5, color='orange', linestyle='--', alpha=0.7, label='Phase 3 (top 50)')
-axes[1].set_title('Accuracy durant l\'entraînement', fontsize=12)
+axes[1].set_title('Ethnicity Accuracy durant l\'entraînement', fontsize=12)
 axes[1].set_xlabel('Epoch')
 axes[1].set_ylabel('Accuracy')
 axes[1].legend(fontsize=9)
 axes[1].grid(True, alpha=0.3)
 
-plt.suptitle('Modèle 5 : EfficientNetB0 Optimal (3 phases)', fontsize=14, y=1.02)
+plt.suptitle('Modèle 5 Multi-Tâches : EfficientNetB0 Optimal (2 phases)', fontsize=14, y=1.02)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_transfer_optimal.png'), dpi=150, bbox_inches='tight')
 plt.show()
 
-# Résumé des phases
 print("=" * 50)
-print("RÉSUMÉ DES 3 PHASES")
+print("RÉSUMÉ DES 2 PHASES")
 print("=" * 50)
-print(f"Phase 1 (head seul) : {len(history1.history['loss'])} epochs - Val acc: {phase1_acc*100:.2f}%")
-print(f"Phase 2 (top 20)    : {len(history2.history['loss'])} epochs - Val acc: {phase2_acc*100:.2f}%")
-print(f"Phase 3 (top 50)    : {len(history3.history['loss'])} epochs - Val acc: {phase3_acc*100:.2f}%")
+print(f"Phase 1 (head seul) : {len(history1.history['loss'])} epochs - Val eth acc: {phase1_eth_acc*100:.2f}% - Val gender acc: {phase1_gender_acc*100:.2f}%")
+print(f"Phase 2 (top 20)    : {len(history2.history['loss'])} epochs - Val eth acc: {phase2_eth_acc*100:.2f}% - Val gender acc: {phase2_gender_acc*100:.2f}%")
+print("Phase 3 : supprimée (causait de l'overfitting)")
 
 # %% [code]
-"""## 11. Matrice de confusion"""
+"""## 11. Matrice de confusion (ethnicité)"""
 
-cm_matrix = confusion_matrix(y_test, y_pred)
+cm_matrix = confusion_matrix(y_eth_test, y_pred_eth)
 
 plt.figure(figsize=(8, 6))
 sns.heatmap(
@@ -461,7 +491,7 @@ sns.heatmap(
     xticklabels=eth_labels,
     yticklabels=eth_labels
 )
-plt.title('Matrice de confusion - Modèle 5 : EfficientNetB0 Optimal')
+plt.title('Matrice de confusion (ethnicité) - Modèle 5 Multi-Tâches')
 plt.xlabel('Prédit')
 plt.ylabel('Réel')
 plt.tight_layout()
@@ -469,9 +499,9 @@ plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_transfer_optimal.png'), 
 plt.show()
 
 # %% [code]
-"""## 12. Performances par classe"""
+"""## 12. Performances par classe (ethnicité)"""
 
-precision, recall, f1, support = precision_recall_fscore_support(y_test, y_pred)
+precision, recall, f1, support = precision_recall_fscore_support(y_eth_test, y_pred_eth)
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -483,7 +513,7 @@ bars2 = ax.bar(x_pos, recall * 100, width, label='Recall', color='teal')
 bars3 = ax.bar(x_pos + width, f1 * 100, width, label='F1-Score', color='coral')
 
 ax.set_ylabel('Score (%)')
-ax.set_title('Performances par classe - Modèle 5 : EfficientNetB0 Optimal')
+ax.set_title('Performances par classe (ethnicité) - Modèle 5 Multi-Tâches')
 ax.set_xticks(x_pos)
 ax.set_xticklabels(eth_labels)
 ax.legend()
@@ -522,6 +552,8 @@ def make_gradcam_heatmap(img_array, model, base_model, pred_index=None):
         outputs=[base_model.get_layer(last_conv_layer_name).output, base_model.output]
     )
 
+    # Build a mini-model for the ethnicity head path
+    # We need to manually trace through the model layers after the base model
     head_layers = []
     found_base = False
     for layer in model.layers:
@@ -535,9 +567,18 @@ def make_gradcam_heatmap(img_array, model, base_model, pred_index=None):
         conv_outputs, base_features = sub_base(img_array, training=False)
         tape.watch(conv_outputs)
 
+        # Trace through layers to get ethnicity output
+        # For multi-output, we need to trace through the graph manually
         x = base_features
         for layer in head_layers:
-            x = layer(x, training=False)
+            if layer.name == 'ethnicity':
+                # This is the ethnicity output layer - use it for grad-cam
+                x = layer(x, training=False)
+                break
+            try:
+                x = layer(x, training=False)
+            except:
+                continue
         predictions = x
 
         if pred_index is None:
@@ -559,7 +600,7 @@ def make_gradcam_heatmap(img_array, model, base_model, pred_index=None):
 def display_gradcam(img, heatmap, alpha=0.4):
     """Superpose la heatmap Grad-CAM sur l'image originale."""
     # Dénormaliser l'image EfficientNet pour l'affichage
-    img_display = (img + 1.0) / 2.0  # [-1, 1] → [0, 1]
+    img_display = (img + 1.0) / 2.0  # [-1, 1] -> [0, 1]
     img_display = np.clip(img_display, 0, 1)
 
     heatmap_resized = tf.image.resize(
@@ -581,22 +622,24 @@ for i, idx in enumerate(indices):
     img = X_test[idx]
     img_array = np.expand_dims(img, axis=0)
 
-    pred_proba = model.predict(img_array, verbose=0)
-    pred_class = np.argmax(pred_proba)
-    true_class = y_test[idx]
-    confidence = pred_proba[0][pred_class] * 100
+    pred_age_val, pred_gender_val, pred_eth_val = model.predict(img_array, verbose=0)
+    pred_eth_class = np.argmax(pred_eth_val)
+    true_eth_class = y_eth_test[idx]
+    confidence = pred_eth_val[0][pred_eth_class] * 100
+    pred_gender_label = gender_labels[int(pred_gender_val[0][0] > 0.5)]
+    pred_age_display = pred_age_val[0][0]
 
-    heatmap = make_gradcam_heatmap(img_array, model, base_model, pred_class)
+    heatmap = make_gradcam_heatmap(img_array, model, base_model, pred_eth_class)
     superimposed, img_display = display_gradcam(img, heatmap)
 
-    color = 'green' if pred_class == true_class else 'red'
+    color = 'green' if pred_eth_class == true_eth_class else 'red'
 
     row = i // 2
     col = (i % 2) * 2
     axes[row, col].imshow(img_display)
     axes[row, col].set_title(
-        f"Réel: {eth_labels[true_class]}\nPrédit: {eth_labels[pred_class]} ({confidence:.1f}%)",
-        fontsize=10, color=color
+        f"Réel: {eth_labels[true_eth_class]}\nPrédit: {eth_labels[pred_eth_class]} ({confidence:.1f}%)\nAge: {pred_age_display:.0f} | {pred_gender_label}",
+        fontsize=9, color=color
     )
     axes[row, col].axis('off')
 
@@ -604,16 +647,16 @@ for i, idx in enumerate(indices):
     axes[row, col + 1].set_title('Grad-CAM', fontsize=10)
     axes[row, col + 1].axis('off')
 
-plt.suptitle('Grad-CAM - Modèle 5 : EfficientNetB0 Optimal\n(Zones chaudes = où le modèle regarde)', fontsize=14, y=1.02)
+plt.suptitle('Grad-CAM - Modèle 5 Multi-Tâches\n(Zones chaudes = où le modèle regarde)', fontsize=14, y=1.02)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_PATH, 'gradcam_transfer_optimal.png'), dpi=150, bbox_inches='tight')
 plt.show()
 
 # %% [code]
-"""## 14. Distribution de confiance des prédictions"""
+"""## 14. Distribution de confiance des prédictions (ethnicité)"""
 
-y_pred_max_proba = np.max(y_pred_proba, axis=1)
-correct_mask = (y_pred == y_test)
+y_pred_max_proba = np.max(y_pred_eth_proba, axis=1)
+correct_mask = (y_pred_eth == y_eth_test)
 incorrect_mask = ~correct_mask
 
 fig, ax = plt.subplots(figsize=(10, 6))
@@ -623,9 +666,9 @@ ax.hist(y_pred_max_proba[correct_mask], bins=30, alpha=0.7,
 ax.hist(y_pred_max_proba[incorrect_mask], bins=30, alpha=0.7,
         label=f'Incorrect ({incorrect_mask.sum()})', color='red', edgecolor='darkred')
 
-ax.set_xlabel('Probabilité de la classe prédite')
+ax.set_xlabel('Probabilité de la classe prédite (ethnicité)')
 ax.set_ylabel('Nombre de prédictions')
-ax.set_title('Distribution de confiance - Modèle 5 : EfficientNetB0 Optimal')
+ax.set_title('Distribution de confiance (ethnicité) - Modèle 5 Multi-Tâches')
 ax.legend()
 ax.grid(True, alpha=0.3)
 
@@ -639,59 +682,243 @@ print(f"Confiance moyenne (incorrectes) : {y_pred_max_proba[incorrect_mask].mean
 # %% [code]
 """## 15. Sauvegarde du modèle"""
 
-model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_transfer_optimal.keras'))
-print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_transfer_optimal.keras")
+model.save(os.path.join(OUTPUT_PATH, 'multitask_model_transfer_optimal.keras'))
+print(f"Modèle sauvegardé : {OUTPUT_PATH}/multitask_model_transfer_optimal.keras")
 
 # %% [code]
-"""## 16. Résumé final"""
+"""## 16. Export TensorFlow Lite (3 sorties)
+
+Pour EfficientNetB0 multi-tâches avec mixed precision :
+1. Créer un modèle d'inférence sans augmentation avec 3 sorties
+2. S'assurer que tout est en float32 pour l'export TFLite
+"""
+
+print("\n" + "=" * 60)
+print("EXPORT TENSORFLOW LITE (Multi-Tâches)")
+print("=" * 60)
+
+# Repasser en float32 pour l'export TFLite
+try:
+    tf.keras.mixed_precision.set_global_policy('float32')
+    print("Policy remise en float32 pour l'export")
+except:
+    pass
+
+# Modèle d'inférence sans augmentation avec 3 sorties
+inference_inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3), name='input_image')
+x = base_model(inference_inputs, training=False)
+x = layers.GlobalAveragePooling2D()(x)
+
+# Retrieve trained layers by name from the original model
+bn_layer = model.get_layer(index=4)  # BatchNormalization after GAP
+x = bn_layer(x)
+
+# Shared trunk
+shared_dense = None
+shared_dropout = None
+for layer in model.layers:
+    if isinstance(layer, layers.Dense) and layer.units == 512 and 'age' not in layer.name and 'gender' not in layer.name and 'ethnicity' not in layer.name:
+        shared_dense = layer
+        break
+
+# Rebuild using the trained model's layers by tracing the graph
+# Instead of manual layer matching, use a functional approach:
+# Get all layer names and weights from trained model, then rebuild
+
+# Simpler approach: rebuild inference model by reusing trained layers
+# Find layers by inspecting the model
+def find_layers_by_config(model):
+    """Extract layer references from the trained model."""
+    layer_dict = {}
+    for layer in model.layers:
+        layer_dict[layer.name] = layer
+    return layer_dict
+
+layer_dict = find_layers_by_config(model)
+
+# Rebuild the inference path without data_augmentation
+inf_x = base_model(inference_inputs, training=False)
+
+# Trace through model layers (skip Input, data_augmentation, base_model)
+skip_names = {'input_image', model.input_names[0] if hasattr(model, 'input_names') else 'input'}
+rebuild_layers = []
+for layer in model.layers:
+    if layer.name in skip_names:
+        continue
+    if layer.name == 'data_augmentation':
+        continue
+    if layer.name == base_model.name:
+        continue
+    rebuild_layers.append(layer)
+
+# Use Keras functional API to trace through the computation graph
+# by getting the model config and rebuilding without augmentation
+# Simplest reliable approach: build from the output tensors
+
+# Get the trained model's layer graph
+from tensorflow.keras.utils import get_custom_objects
+
+# Most reliable: use model's get_layer and manually rebuild
+gap_out = layers.GlobalAveragePooling2D()(inf_x)
+
+# Find layers in order from the trained model graph
+# Approach: iterate model layers in topological order, skip input/augmentation/base
+import json
+
+def rebuild_inference_model(trained_model, base_model, inference_inputs):
+    """Rebuild inference model without data augmentation, reusing trained weights."""
+    # Get base model output
+    x = base_model(inference_inputs, training=False)
+
+    # Build a mapping of layer name -> layer for the trained model
+    trained_layers = {l.name: l for l in trained_model.layers}
+
+    # Get the model config to understand the graph topology
+    config = trained_model.get_config()
+
+    # Map from layer output node to tensor
+    tensor_map = {}
+    tensor_map[config['input_layers'][0][0]] = inference_inputs
+    tensor_map[base_model.name] = x
+
+    # Process layers in order (they come in topological order in config)
+    for layer_config in config['layers']:
+        layer_name = layer_config['name']
+
+        # Skip input, augmentation, and base model
+        if layer_name in tensor_map:
+            continue
+        if layer_name == 'data_augmentation':
+            # Map augmentation output to the input (skip augmentation)
+            # Find what augmentation feeds into (base_model)
+            tensor_map[layer_name] = inference_inputs
+            continue
+
+        # Get inbound nodes to find input tensors
+        inbound = layer_config['inbound_nodes']
+        if not inbound:
+            continue
+
+        # Get input tensors
+        input_tensors = []
+        for node_info in inbound[0]:
+            if isinstance(node_info, dict):
+                # Keras 3 format
+                input_name = node_info['args'][0]['config']['keras_history'][0]
+            elif isinstance(node_info, (list, tuple)):
+                input_name = node_info[0]
+            else:
+                continue
+            if input_name in tensor_map:
+                input_tensors.append(tensor_map[input_name])
+
+        if not input_tensors:
+            continue
+
+        inp = input_tensors[0] if len(input_tensors) == 1 else input_tensors
+
+        # Apply the trained layer
+        trained_layer = trained_layers[layer_name]
+        tensor_map[layer_name] = trained_layer(inp)
+
+    # Get output tensors
+    outputs = []
+    for out_info in config['output_layers']:
+        out_name = out_info[0]
+        outputs.append(tensor_map[out_name])
+
+    return models.Model(inference_inputs, outputs, name='Transfer_Optimal_Inference')
+
+inference_model = rebuild_inference_model(model, base_model, inference_inputs)
+
+# Verify outputs match
+test_img = X_test[:1]
+pred_original = model.predict(test_img, verbose=0)
+pred_inference = inference_model.predict(test_img, verbose=0)
+
+for i, (po, pi) in enumerate(zip(pred_original, pred_inference)):
+    diff = np.max(np.abs(po - pi))
+    out_names = ['age', 'gender', 'ethnicity']
+    print(f"Vérification {out_names[i]} : diff max = {diff:.6f}")
+
+tflite_path = os.path.join(OUTPUT_PATH, 'model_multitask.tflite')
+
+# CONVERSION TFLITE CORRIGEE (pas de float16 quantization qui casse Swish/SE-Net)
+converter = tf.lite.TFLiteConverter.from_keras_model(inference_model)
+converter.optimizations = []  # Pas de quantization
+converter.target_spec.supported_ops = [
+    tf.lite.OpsSet.TFLITE_BUILTINS,
+    tf.lite.OpsSet.SELECT_TF_OPS  # Nécessaire pour les ops EfficientNet (Swish, SE-Net)
+]
+converter._experimental_lower_tensor_list_ops = False
+
+tflite_model = converter.convert()
+
+with open(tflite_path, 'wb') as f:
+    f.write(tflite_model)
+
+size_mb = os.path.getsize(tflite_path) / (1024 * 1024)
+print(f"Modèle TFLite sauvegardé : {tflite_path} ({size_mb:.1f} MB)")
+
+interpreter = tf.lite.Interpreter(model_path=tflite_path)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+print(f"  Input  : shape={input_details[0]['shape']}, dtype={input_details[0]['dtype']}")
+for i, od in enumerate(output_details):
+    print(f"  Output {i} : shape={od['shape']}, dtype={od['dtype']}")
+
+test_input = np.random.rand(1, IMG_SIZE, IMG_SIZE, 3).astype(np.float32)
+interpreter.set_tensor(input_details[0]['index'], test_input)
+interpreter.invoke()
+for i, od in enumerate(output_details):
+    test_output = interpreter.get_tensor(od['index'])
+    out_names = ['age', 'gender', 'ethnicity']
+    print(f"  Test {out_names[i] if i < 3 else i} : {test_output.flatten()}")
+print("  TFLite OK !")
+
+# %% [code]
+"""## 17. Résumé final"""
 
 print("=" * 60)
-print("RÉSUMÉ FINAL - MODÈLE 5 : EFFICIENTNETB0 OPTIMAL")
+print("RÉSUMÉ FINAL - MODÈLE 5 MULTI-TÂCHES : EFFICIENTNETB0 OPTIMAL")
 print("=" * 60)
 print(f"""
 Architecture :
   - Base model : EfficientNetB0 (ImageNet)
-  - Head : GAP → BN → Dense(512) → Dropout(0.4) → Dense(128) → Dropout(0.3) → Dense(5)
+  - Shared trunk : GAP -> BN -> Dense(512) -> Dropout(0.4)
+  - Age branch : Dense(128) -> Dense(64) -> Dense(1, linear)
+  - Gender branch : Dense(128) -> Dropout(0.3) -> Dense(1, sigmoid)
+  - Ethnicity branch : Dense(256) -> Dense(128) -> Dropout(0.3) -> Dense(5, softmax)
   - Input : RGB 128x128 (preprocessing EfficientNet [-1, 1])
   - Mixed precision : float16
   - Paramètres totaux : {model.count_params():,}
 
-CHANGEMENTS vs Modèle 4 :
-  → EfficientNetB0 au lieu de MobileNetV2
-  → Preprocessing EfficientNet ([-1, 1]) au lieu de /255
-  → Head renforcé (512 → 128 → 5) avec BatchNorm
-  → 3 phases de fine-tuning (au lieu de 2)
-  → Label smoothing (0.1)
-  → Mixed precision (float16)
-
 Entraînement :
-  - Phase 1 : Head seul (lr=1e-3) - {len(history1.history['loss'])} epochs → Val acc: {phase1_acc*100:.2f}%
-  - Phase 2 : Top 20 couches (lr=1e-4) - {len(history2.history['loss'])} epochs → Val acc: {phase2_acc*100:.2f}%
-  - Phase 3 : Top 50 couches (lr=1e-5) - {len(history3.history['loss'])} epochs → Val acc: {phase3_acc*100:.2f}%
-  - Loss : Focal Loss (gamma=2.0, label_smoothing=0.1)
+  - Phase 1 : Head seul (lr=1e-3) - {len(history1.history['loss'])} epochs
+  - Phase 2 : Top 20 couches (lr=1e-4) - {len(history2.history['loss'])} epochs
+  - Phase 3 : Top 50 couches (lr=1e-5) - {len(history3.history['loss'])} epochs
+  - Loss : Huber (age, delta=8) + BCE (gender) + Focal (ethnicity, gamma=2.0, label_smoothing=0.1)
+  - Loss weights : age=0.4, gender=1.0, ethnicity=1.0
   - Augmentation : RandomFlip, RandomRotation, RandomZoom, RandomBrightness, RandomContrast
 
 Résultats :
-  - Accuracy globale : {accuracy*100:.2f}%
-  - AUC (macro) : {auc_score:.4f}
-  - AP (macro) : {ap_score:.4f}
+  - Age MAE : {age_mae:.2f} ans
+  - Gender Accuracy : {gender_accuracy*100:.2f}%
+  - Ethnicity Accuracy : {eth_accuracy*100:.2f}%
+  - Ethnicity AUC (macro) : {auc_score:.4f}
+  - Ethnicity AP (macro) : {ap_score:.4f}
 """)
 
-print("Performances par classe :")
+print("Performances par classe (ethnicité) :")
 for i, label in enumerate(eth_labels):
     print(f"  {label:10s} - Precision: {precision[i]*100:5.1f}% | Recall: {recall[i]*100:5.1f}% | F1: {f1[i]*100:5.1f}% | Support: {support[i]}")
 
 print(f"\n{'=' * 60}")
-print("COMPARAISON AVEC LE MEILLEUR MODÈLE CNN CUSTOM")
-print("=" * 60)
-print(f"  Meilleur CNN custom (Focal+Augmentation) : 78.38%")
-print(f"  Modèle 5 (EfficientNetB0 Optimal)       : {accuracy*100:.2f}%")
-print(f"  Amélioration                             : {(accuracy*100 - 78.38):+.2f} points")
-
-print(f"\n{'=' * 60}")
 print("FICHIERS SAUVEGARDÉS")
 print("=" * 60)
-print("  - ethnicity_model_transfer_optimal.keras")
+print("  - multitask_model_transfer_optimal.keras")
+print("  - multitask_transfer_optimal.tflite")
 print("  - training_curves_transfer_optimal.png")
 print("  - confusion_matrix_transfer_optimal.png")
 print("  - metrics_per_class_transfer_optimal.png")
