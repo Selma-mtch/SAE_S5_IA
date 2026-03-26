@@ -43,6 +43,8 @@ public class CameraActivity extends AppCompatActivity {
     private ExecutorService cameraExecutor;
     private boolean isRealTimeMode = false;
     private int cameraFacing = CameraSelector.LENS_FACING_BACK;
+    private long lastAnalysisTimestamp = 0;
+    private static final long ANALYSIS_INTERVAL_MS = 200; // ~5 fps max
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -143,6 +145,13 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void analyzeImage(ImageProxy image) {
+        long now = System.currentTimeMillis();
+        if (now - lastAnalysisTimestamp < ANALYSIS_INTERVAL_MS) {
+            image.close();
+            return;
+        }
+        lastAnalysisTimestamp = now;
+
         Bitmap bitmap = imageProxyToBitmap(image);
         if (bitmap != null) {
             FaceAnalyzer.PredictionResult result = faceAnalyzer.analyze(bitmap);
@@ -183,11 +192,18 @@ public class CameraActivity extends AppCompatActivity {
 
             Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
 
-            // Rotation si caméra frontale
-            if (cameraFacing == CameraSelector.LENS_FACING_FRONT) {
+            int rotationDegrees = image.getImageInfo().getRotationDegrees();
+            boolean needsRotation = rotationDegrees != 0;
+            boolean isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT;
+
+            if (needsRotation || isFrontCamera) {
                 Matrix matrix = new Matrix();
-                matrix.postRotate(image.getImageInfo().getRotationDegrees());
-                matrix.postScale(-1, 1);
+                if (needsRotation) {
+                    matrix.postRotate(rotationDegrees);
+                }
+                if (isFrontCamera) {
+                    matrix.postScale(-1, 1);
+                }
                 Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
                 bitmap.recycle();
                 return rotated;

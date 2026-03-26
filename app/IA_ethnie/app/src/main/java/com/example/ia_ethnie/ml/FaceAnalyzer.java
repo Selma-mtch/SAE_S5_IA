@@ -143,7 +143,7 @@ public class FaceAnalyzer {
         return currentModelType;
     }
 
-    public PredictionResult analyze(Bitmap bitmap) {
+    public synchronized PredictionResult analyze(Bitmap bitmap) {
         Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true);
 
         PredictionResult result;
@@ -324,26 +324,29 @@ public class FaceAnalyzer {
 
         int ageIdx = -1, genderIdx = -1, ethIdx = -1;
 
+        // D'abord par nom de tenseur
         for (int i = 0; i < outputCount; i++) {
             String name = transferInterpreter.getOutputTensor(i).name().toLowerCase();
             if (name.contains("age")) ageIdx = i;
             else if (name.contains("gender")) genderIdx = i;
-            else if (name.contains("ethnic")) ethIdx = i;
+            else if (name.contains("ethnic") || name.contains("race")) ethIdx = i;
         }
 
+        // Fallback par shape: ethnie=[1,5], genre=[1,2], age=[1,1]
         if (ageIdx == -1 || genderIdx == -1 || ethIdx == -1) {
             for (int i = 0; i < outputCount; i++) {
                 int[] shape = transferInterpreter.getOutputTensor(i).shape();
                 if (shape.length == 2 && shape[1] == NUM_ETHNICITY_CLASSES && ethIdx == -1) {
                     ethIdx = i;
+                } else if (shape.length == 2 && shape[1] == NUM_GENDER_CLASSES && genderIdx == -1) {
+                    genderIdx = i;
                 }
             }
             for (int i = 0; i < outputCount; i++) {
-                if (i == ethIdx) continue;
+                if (i == ethIdx || i == genderIdx) continue;
                 int[] shape = transferInterpreter.getOutputTensor(i).shape();
-                if (shape.length == 2 && shape[1] == 1) {
-                    if (ageIdx == -1) ageIdx = i;
-                    else if (genderIdx == -1) genderIdx = i;
+                if (shape.length == 2 && shape[1] == 1 && ageIdx == -1) {
+                    ageIdx = i;
                 }
             }
         }
@@ -352,8 +355,11 @@ public class FaceAnalyzer {
         if (genderIdx == -1) genderIdx = 1;
         if (ethIdx == -1) ethIdx = 2;
 
+        // Déterminer la shape du gender output (softmax 2 classes ou sigmoid 1 classe)
+        int genderOutputSize = transferInterpreter.getOutputTensor(genderIdx).shape()[1];
+
         float[][] ageOutput = new float[1][1];
-        float[][] genderOutput = new float[1][1];
+        float[][] genderOutput = new float[1][genderOutputSize];
         float[][] ethnicityOutput = new float[1][NUM_ETHNICITY_CLASSES];
 
         Object[] inputs = {inputBuffer};
@@ -364,21 +370,23 @@ public class FaceAnalyzer {
 
         transferInterpreter.runForMultipleInputsOutputs(inputs, outputs);
 
-        android.util.Log.d("FaceAnalyzer", "[TRANSFER] Raw age=" + ageOutput[0][0]
-                + " gender=" + genderOutput[0][0]
-                + " ethnicity=" + java.util.Arrays.toString(ethnicityOutput[0]));
+        // Age
+        int predictedAge = Math.round(ageOutput[0][0]);
 
-        if (ageOutput[0][0] >= 0.0f && ageOutput[0][0] <= 1.0f
-                && genderOutput[0][0] > 1.0f) {
-            float[][] temp = ageOutput;
-            ageOutput = genderOutput;
-            genderOutput = temp;
+        // Gender : softmax 2 classes ou sigmoid
+        int genderIndex;
+        float genderConf;
+        if (genderOutputSize >= NUM_GENDER_CLASSES) {
+            // Softmax 2 classes [Homme, Femme]
+            genderIndex = argMax(genderOutput[0]);
+            genderConf = genderOutput[0][genderIndex];
+        } else {
+            // Sigmoid : 0 = Homme, 1 = Femme
+            float genderSigmoid = genderOutput[0][0];
+            genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
+            genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
         }
 
-        int predictedAge = Math.round(ageOutput[0][0]);
-        float genderSigmoid = genderOutput[0][0];
-        int genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
-        float genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
         int ethnicityIndex = argMax(ethnicityOutput[0]);
 
         return new PredictionResult(
@@ -443,14 +451,14 @@ public class FaceAnalyzer {
     }
 
     private PredictionResult createDemoResult() {
-        // Résultat de démonstration quand aucun modèle n'est chargé
+        // Résultat par défaut quand aucun modèle n'est chargé
         return new PredictionResult(
-                25,
-                "Homme",
-                "Blanc",
-                0.85f,
-                0.92f,
-                0.78f,
+                0,
+                "N/A",
+                "N/A",
+                0.0f,
+                0.0f,
+                0.0f,
                 currentModelType
         );
     }

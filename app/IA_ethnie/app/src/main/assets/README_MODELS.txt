@@ -3,35 +3,32 @@ MODELES TENSORFLOW LITE
 
 Placez vos fichiers .tflite dans ce dossier:
 
-1. model_multitask.tflite    - Modèle multi-tâches (âge, genre, ethnicité)
-2. model_ethnicity.tflite    - Modèle spécialisé ethnicité
-3. model_age.tflite          - Modèle spécialisé âge
-4. model_gender.tflite       - Modèle spécialisé genre
+1. model_multitask.tflite    - Modele multi-taches (age, genre, ethnicite)
+2. model_ethnicity.tflite    - Modele specialise ethnicite
+3. model_age.tflite          - Modele specialise age
+4. model_gender.tflite       - Modele specialise genre
+5. model_transfer.tflite     - Modele par transfert (MobileNetV2)
 
-Pour convertir vos modèles Keras en TFLite, utilisez:
+Format d'entree par modele:
+---------------------------
 
-```python
-import tensorflow as tf
-
-# Charger le modèle Keras
-model = tf.keras.models.load_model('mon_model.h5')
-
-# Convertir en TFLite
-converter = tf.lite.TFLiteConverter.from_keras_model(model)
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-tflite_model = converter.convert()
-
-# Sauvegarder
-with open('mon_model.tflite', 'wb') as f:
-    f.write(tflite_model)
-```
-
-Format d'entrée attendu:
+MULTI_TASK (model_multitask.tflite):
 - Taille: 128x128 pixels
 - Canaux: 1 (niveaux de gris)
 - Normalisation: [0, 1]
+- Sorties: age (float), genre (sigmoid 1 classe), ethnicite (softmax 5 classes)
 
-Sorties (modèle multi-tâches):
-- Âge: float (régression)
-- Genre: 2 classes (Homme, Femme)
-- Ethnicité: 5 classes (Blanc, Noir, Asiatique, Indien, Autre)
+SPECIALIZED:
+- model_age.tflite:       128x128, 3 canaux (RGB), normalisation [-1, 1]
+- model_gender.tflite:    128x128, 1 canal (niveaux de gris), normalisation [0, 1]
+- model_ethnicity.tflite: 128x128, 1 canal (niveaux de gris), normalisation [0, 1]
+
+TRANSFER (model_transfer.tflite):
+- Taille: 128x128 pixels
+- Canaux: 3 (RGB)
+- Normalisation: [-1, 1] (MobileNetV2 preprocess_input)
+- Sorties: age (float linear), genre (softmax 2 classes), ethnicite (softmax 5 classes)
+
+Classes:
+- Genre: 0=Homme, 1=Femme
+- Ethnicite: 0=Blanc, 1=Noir, 2=Asiatique, 3=Indien, 4=Autre

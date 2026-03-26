@@ -22,12 +22,16 @@ import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.Query;
 
+import com.google.firebase.firestore.WriteBatch;
+
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class HistoryActivity extends AppCompatActivity {
     private ActivityHistoryBinding binding;
@@ -35,6 +39,8 @@ public class HistoryActivity extends AppCompatActivity {
     private SessionManager sessionManager;
     private HistoryAdapter adapter;
     private List<PredictionItem> predictions = new ArrayList<>();
+    private final ExecutorService imageExecutor = Executors.newFixedThreadPool(3);
+    private static final int PAGE_SIZE = 50;
 
     // Classe interne pour stocker les données de prédiction
     private static class PredictionItem {
@@ -90,6 +96,7 @@ public class HistoryActivity extends AppCompatActivity {
         db.collection("predictions")
                 .whereEqualTo("userId", userId)
                 .orderBy("createdAt", Query.Direction.DESCENDING)
+                .limit(PAGE_SIZE)
                 .get()
                 .addOnSuccessListener(querySnapshot -> {
                     predictions.clear();
@@ -137,18 +144,25 @@ public class HistoryActivity extends AppCompatActivity {
         String userId = sessionManager.getUserId();
         if (userId == null) return;
 
-        // Supprimer tous les documents de l'utilisateur
+        // Supprimer tous les documents de l'utilisateur (batch atomique)
         db.collection("predictions")
                 .whereEqualTo("userId", userId)
                 .get()
                 .addOnSuccessListener(querySnapshot -> {
+                    WriteBatch batch = db.batch();
                     for (DocumentSnapshot doc : querySnapshot.getDocuments()) {
-                        doc.getReference().delete();
+                        batch.delete(doc.getReference());
                     }
-                    predictions.clear();
-                    adapter.notifyDataSetChanged();
-                    showEmptyState();
-                    Toast.makeText(this, "Historique supprimé", Toast.LENGTH_SHORT).show();
+                    batch.commit()
+                            .addOnSuccessListener(aVoid -> {
+                                predictions.clear();
+                                adapter.notifyDataSetChanged();
+                                showEmptyState();
+                                Toast.makeText(this, "Historique supprimé", Toast.LENGTH_SHORT).show();
+                            })
+                            .addOnFailureListener(e -> {
+                                Toast.makeText(this, "Erreur lors de la suppression", Toast.LENGTH_SHORT).show();
+                            });
                 })
                 .addOnFailureListener(e -> {
                     Toast.makeText(this, "Erreur lors de la suppression", Toast.LENGTH_SHORT).show();
@@ -184,16 +198,29 @@ public class HistoryActivity extends AppCompatActivity {
         public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
             PredictionItem prediction = predictions.get(position);
 
-            // Image locale
+            // Image locale (chargement asynchrone)
+            holder.ivImage.setImageResource(R.drawable.ic_face_scan);
+            holder.ivImage.setTag(prediction.localImagePath);
             if (prediction.localImagePath != null) {
-                File imageFile = new File(prediction.localImagePath);
-                if (imageFile.exists()) {
-                    holder.ivImage.setImageBitmap(BitmapFactory.decodeFile(prediction.localImagePath));
-                } else {
-                    holder.ivImage.setImageResource(R.drawable.ic_face_scan);
-                }
-            } else {
-                holder.ivImage.setImageResource(R.drawable.ic_face_scan);
+                final String path = prediction.localImagePath;
+                imageExecutor.execute(() -> {
+                    File imageFile = new File(path);
+                    if (!imageFile.exists()) return;
+
+                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                    opts.inSampleSize = 4; // Thumbnail : réduire mémoire
+                    android.graphics.Bitmap thumb = BitmapFactory.decodeFile(path, opts);
+                    if (thumb == null) return;
+
+                    runOnUiThread(() -> {
+                        // Vérifier que le ViewHolder n'a pas été recyclé
+                        if (path.equals(holder.ivImage.getTag())) {
+                            holder.ivImage.setImageBitmap(thumb);
+                        } else {
+                            thumb.recycle();
+                        }
+                    });
+                });
             }
 
             // Infos
@@ -241,5 +268,11 @@ public class HistoryActivity extends AppCompatActivity {
                 btnDelete = view.findViewById(R.id.btnDelete);
             }
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        imageExecutor.shutdown();
     }
 }

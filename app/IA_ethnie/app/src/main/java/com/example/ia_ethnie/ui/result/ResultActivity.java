@@ -37,10 +37,14 @@ public class ResultActivity extends AppCompatActivity {
         sessionManager = new SessionManager(this);
         faceAnalyzer = new FaceAnalyzer(this);
 
-        // Charger le type de modèle sélectionné
+        // Charger le type de modèle sélectionné (avec validation)
         int modelType = getSharedPreferences("settings", MODE_PRIVATE)
                 .getInt("model_type", 1);
-        faceAnalyzer.setModelType(FaceAnalyzer.ModelType.values()[modelType]);
+        FaceAnalyzer.ModelType[] types = FaceAnalyzer.ModelType.values();
+        if (modelType < 0 || modelType >= types.length) {
+            modelType = 1; // MULTI_TASK par défaut
+        }
+        faceAnalyzer.setModelType(types[modelType]);
 
         imagePath = getIntent().getStringExtra("image_path");
         if (imagePath == null) {
@@ -62,19 +66,22 @@ public class ResultActivity extends AppCompatActivity {
     }
 
     private void processImage() {
-        Bitmap bitmap = BitmapFactory.decodeFile(imagePath);
-        if (bitmap == null) {
-            Toast.makeText(this, "Erreur lecture image", Toast.LENGTH_SHORT).show();
-            finish();
-            return;
-        }
-
-        binding.ivFace.setImageBitmap(bitmap);
-
         executor.execute(() -> {
+            Bitmap bitmap = BitmapFactory.decodeFile(imagePath);
+            if (bitmap == null) {
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Erreur lecture image", Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+                return;
+            }
+
             currentResult = faceAnalyzer.analyze(bitmap);
 
-            runOnUiThread(() -> displayResult(currentResult));
+            runOnUiThread(() -> {
+                binding.ivFace.setImageBitmap(bitmap);
+                displayResult(currentResult);
+            });
         });
     }
 

@@ -8,17 +8,17 @@
 **Approche :** CNN custom from scratch combinant toutes les techniques optimales
 - 4 blocs convolutionnels élargis (48 → 96 → 192 → 384 filtres)
 - ResNet (Skip Connections) + SE-Net (Channel Attention) + Separable Conv
-- Binary Focal Loss avec Label Smoothing
-- Régularisation L2 (1e-4) + Dropout progressif (0.2 → 0.3 → 0.4 → 0.5)
+- Binary Crossentropy + Class Weights
+- Dropout progressif (0.25 → 0.25 → 0.3 → 0.3)
 - Entraînement en 2 phases (lr=1e-3 puis lr=1e-4)
 - Data Augmentation renforcée intégrée au modèle
 
 **Architecture :**
-- Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.2)
-- Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
-- Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.4)
-- Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.5)
-- GAP → Dense(512) → Dropout(0.4) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+- Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
+- Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
+- Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
+- Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
+- GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
 
 **Preprocessing :**
 - Images RGB (3 canaux)
@@ -273,8 +273,7 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     - ResNet : Skip connections
     - SE-Net : Channel attention
     - Separable Conv : Réduction paramètres
-    - L2 regularization (1e-4)
-    - Dropout progressif : 0.2 → 0.3 → 0.4 → 0.5
+    - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
     - Data augmentation intégrée
     """
     inputs = layers.Input(shape=input_shape)
@@ -285,83 +284,77 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     # ================================================================
     # BLOC 1 : 48 filtres
     # ================================================================
-    x = layers.Conv2D(48, (3, 3), padding='same', kernel_regularizer=l2(1e-4))(augmented)
+    x = layers.Conv2D(48, (3, 3), padding='same')(augmented)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = se_block(x, ratio=4)
 
     # Skip connection : adapter l'input à 48 channels
-    shortcut = layers.Conv2D(48, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(augmented)
-    x = layers.Add()([x, shortcut])
-
-    x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.1)(x)
-
-    # ================================================================
-    # BLOC 2 : 96 filtres
-    # ================================================================
-    shortcut = x
-
-    x = layers.SeparableConv2D(96, (3, 3), padding='same',
-                                depthwise_regularizer=l2(1e-4),
-                                pointwise_regularizer=l2(1e-4))(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    x = se_block(x, ratio=8)
-
-    # Skip connection : adapter 48 → 96 channels
-    shortcut = layers.Conv2D(96, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
-    x = layers.Add()([x, shortcut])
-
-    x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.15)(x)
-
-    # ================================================================
-    # BLOC 3 : 192 filtres
-    # ================================================================
-    shortcut = x
-
-    x = layers.SeparableConv2D(192, (3, 3), padding='same',
-                                depthwise_regularizer=l2(1e-4),
-                                pointwise_regularizer=l2(1e-4))(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    x = se_block(x, ratio=8)
-
-    # Skip connection : adapter 96 → 192 channels
-    shortcut = layers.Conv2D(192, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
-    x = layers.Add()([x, shortcut])
-
-    x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.2)(x)
-
-    # ================================================================
-    # BLOC 4 : 384 filtres
-    # ================================================================
-    shortcut = x
-
-    x = layers.SeparableConv2D(384, (3, 3), padding='same',
-                                depthwise_regularizer=l2(1e-4),
-                                pointwise_regularizer=l2(1e-4))(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation('relu')(x)
-    x = se_block(x, ratio=16)
-
-    # Skip connection : adapter 192 → 384 channels
-    shortcut = layers.Conv2D(384, (1, 1), padding='same', kernel_regularizer=l2(1e-4))(shortcut)
+    shortcut = layers.Conv2D(48, (1, 1), padding='same')(augmented)
     x = layers.Add()([x, shortcut])
 
     x = layers.MaxPooling2D((2, 2))(x)
     x = layers.Dropout(0.25)(x)
 
     # ================================================================
+    # BLOC 2 : 96 filtres
+    # ================================================================
+    shortcut = x
+
+    x = layers.SeparableConv2D(96, (3, 3), padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = se_block(x, ratio=8)
+
+    # Skip connection : adapter 48 → 96 channels
+    shortcut = layers.Conv2D(96, (1, 1), padding='same')(shortcut)
+    x = layers.Add()([x, shortcut])
+
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.25)(x)
+
+    # ================================================================
+    # BLOC 3 : 192 filtres
+    # ================================================================
+    shortcut = x
+
+    x = layers.SeparableConv2D(192, (3, 3), padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = se_block(x, ratio=8)
+
+    # Skip connection : adapter 96 → 192 channels
+    shortcut = layers.Conv2D(192, (1, 1), padding='same')(shortcut)
+    x = layers.Add()([x, shortcut])
+
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.3)(x)
+
+    # ================================================================
+    # BLOC 4 : 384 filtres
+    # ================================================================
+    shortcut = x
+
+    x = layers.SeparableConv2D(384, (3, 3), padding='same')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = se_block(x, ratio=16)
+
+    # Skip connection : adapter 192 → 384 channels
+    shortcut = layers.Conv2D(384, (1, 1), padding='same')(shortcut)
+    x = layers.Add()([x, shortcut])
+
+    x = layers.MaxPooling2D((2, 2))(x)
+    x = layers.Dropout(0.3)(x)
+
+    # ================================================================
     # HEAD : Classification binaire
     # ================================================================
     x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(512, activation='relu', kernel_regularizer=l2(1e-4))(x)
+    x = layers.Dense(512, activation='relu')(x)
+    x = layers.Dropout(0.5)(x)
+    x = layers.Dense(128, activation='relu')(x)
     x = layers.Dropout(0.3)(x)
-    x = layers.Dense(128, activation='relu', kernel_regularizer=l2(1e-4))(x)
-    x = layers.Dropout(0.2)(x)
     outputs = layers.Dense(1, activation='sigmoid')(x)
 
     model = models.Model(inputs, outputs, name='CNN_Genre_Optimal')
@@ -389,11 +382,11 @@ print("MODÈLE 5 : ARCHITECTURE OPTIMALE - GENRE")
 print(f"{'='*60}")
 print(f"""
 Architecture élargie (4 blocs) :
-  - Bloc 1 : Conv2D(48) + SE(4) + Skip + Dropout(0.1)
-  - Bloc 2 : SeparableConv2D(96) + SE(8) + Skip + Dropout(0.15)
-  - Bloc 3 : SeparableConv2D(192) + SE(8) + Skip + Dropout(0.2)
-  - Bloc 4 : SeparableConv2D(384) + SE(16) + Skip + Dropout(0.25)
-  - Head : GAP → Dense(512) → Dropout(0.3) → Dense(128) → Dropout(0.2) → Dense(1, sigmoid)
+  - Bloc 1 : Conv2D(48) + SE(4) + Skip + Dropout(0.25)
+  - Bloc 2 : SeparableConv2D(96) + SE(8) + Skip + Dropout(0.25)
+  - Bloc 3 : SeparableConv2D(192) + SE(8) + Skip + Dropout(0.3)
+  - Bloc 4 : SeparableConv2D(384) + SE(16) + Skip + Dropout(0.3)
+  - Head : GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
@@ -401,8 +394,7 @@ Techniques combinées :
   - ResNet : Skip connections
   - SE-Net : Channel attention
   - Separable Conv : Réduction paramètres
-  - L2 regularization : 1e-4
-  - Dropout progressif : 0.1 → 0.15 → 0.2 → 0.25
+  - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
   - Binary Crossentropy + Class Weights
   - Data augmentation renforcée
 """)
@@ -413,9 +405,9 @@ Techniques combinées :
 early_stop1 = EarlyStopping(
     monitor='val_accuracy',
     mode='max',
-    patience=12,
+    patience=7,
     restore_best_weights=True,
-    start_from_epoch=20,
+    start_from_epoch=15,
     verbose=1
 )
 
@@ -439,7 +431,7 @@ print("  - Epochs : 40 (min 20)")
 history1 = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
-    epochs=40,
+    epochs=30,
     batch_size=32,
     class_weight=class_weight_dict,
     callbacks=[early_stop1, reduce_lr1]
@@ -459,7 +451,7 @@ model.compile(
 early_stop2 = EarlyStopping(
     monitor='val_accuracy',
     mode='max',
-    patience=12,
+    patience=7,
     restore_best_weights=True,
     start_from_epoch=10,
     verbose=1
@@ -482,7 +474,7 @@ print("  - Epochs : 30 (min 10)")
 history2 = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
-    epochs=30,
+    epochs=20,
     batch_size=32,
     class_weight=class_weight_dict,
     callbacks=[early_stop2, reduce_lr2]
@@ -794,11 +786,11 @@ print("=" * 60)
 print(f"""
 Architecture :
   - Type : CNN custom from scratch (pas de transfer learning)
-  - Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.1)
-  - Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.15)
-  - Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.2)
-  - Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.25)
-  - Head : GAP → Dense(512) → Dropout(0.3) → Dense(128) → Dropout(0.2) → Dense(1, sigmoid)
+  - Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
+  - Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
+  - Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
+  - Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
+  - Head : GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
@@ -806,8 +798,7 @@ Techniques combinées :
   - ResNet : Skip connections autour de chaque bloc
   - SE-Net : Channel attention (ratios 4, 8, 8, 16)
   - Separable Conv : Blocs 2, 3, 4
-  - L2 regularization : 1e-4 sur toutes les couches convolutionnelles et Dense
-  - Dropout progressif : 0.1 → 0.15 → 0.2 → 0.25
+  - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
   - Binary Crossentropy + Class Weights
   - Data augmentation renforcée : Flip, Rotation, Zoom, Translation, Brightness, Contrast
   - Architecture élargie : 4 blocs (48 → 96 → 192 → 384 filtres)

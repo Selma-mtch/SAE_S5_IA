@@ -537,33 +537,63 @@ plt.show()
 
 
 def make_gradcam_heatmap(img_array, model, base_model, pred_index=None):
-    """Génère une heatmap Grad-CAM pour la branche ethnicité."""
-    # EfficientNetB0 (include_top=False) output = feature maps (batch, h, w, 1280)
-    # On utilise directement cette sortie pour le Grad-CAM
-    # Un seul Model qui extrait feature maps + ethnicité dans le même graphe
-    grad_model = tf.keras.Model(
-        inputs=model.input,
-        outputs=[model.get_layer(base_model.name).output, model.output[2]]
-    )
+    """Génère une heatmap Grad-CAM pour la branche ethnicité.
+    Compatible Keras 3 (contourne le problème des modèles imbriqués)."""
 
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
-        tape.watch(conv_outputs)
+    # En Keras 3, model.get_layer(base_model.name).output retourne un tenseur
+    # du graphe INTERNE du base_model, pas du graphe du modèle principal.
+    # Fix : utiliser gap_layer.input qui EST dans le graphe principal.
+    gap_layer = None
+    for layer in model.layers:
+        if isinstance(layer, layers.GlobalAveragePooling2D):
+            gap_layer = layer
+            break
 
-        if pred_index is None:
-            pred_index = tf.argmax(predictions[0])
-        class_channel = predictions[:, pred_index]
-
-    grads = tape.gradient(class_channel, conv_outputs)
-    if grads is None:
+    if gap_layer is None:
         return np.ones((4, 4), dtype=np.float32) * 0.5
 
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
-    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
-    return heatmap.numpy()
+    try:
+        grad_model = tf.keras.Model(
+            inputs=model.input,
+            outputs=[gap_layer.input, model.output[2]]
+        )
+
+        with tf.GradientTape() as tape:
+            conv_outputs, predictions = grad_model(img_array)
+            tape.watch(conv_outputs)
+
+            if pred_index is None:
+                pred_index = tf.argmax(predictions[0])
+            class_channel = predictions[:, pred_index]
+
+        grads = tape.gradient(class_channel, conv_outputs)
+        if grads is None:
+            return np.ones((4, 4), dtype=np.float32) * 0.5
+
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        conv_outputs = conv_outputs[0]
+        heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
+        heatmap = tf.squeeze(heatmap)
+        heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
+        return heatmap.numpy()
+
+    except Exception as e:
+        print(f"Grad-CAM principal échoué ({e}), fallback saliency map")
+        img_tensor = tf.Variable(img_array.astype(np.float32))
+        with tf.GradientTape() as tape:
+            preds = model(img_tensor, training=False)
+            eth_preds = preds[2]
+            if pred_index is None:
+                pred_index = tf.argmax(eth_preds[0])
+            target = eth_preds[0, pred_index]
+        grads = tape.gradient(target, img_tensor)
+        if grads is None:
+            return np.ones((4, 4), dtype=np.float32) * 0.5
+        saliency = tf.reduce_max(tf.abs(grads[0]), axis=-1)
+        saliency = tf.image.resize(saliency[..., tf.newaxis], (4, 4))[..., 0]
+        saliency = tf.maximum(saliency, 0)
+        saliency = saliency / (tf.math.reduce_max(saliency) + 1e-8)
+        return saliency.numpy()
 
 
 def display_gradcam(img, heatmap, alpha=0.4):
@@ -866,7 +896,6 @@ Architecture :
 Entraînement :
   - Phase 1 : Head seul (lr=1e-3) - {len(history1.history['loss'])} epochs
   - Phase 2 : Top 10 couches (lr=5e-5) - {len(history2.history['loss'])} epochs
-  - Phase 3 : Top 50 couches (lr=1e-5) - {len(history3.history['loss'])} epochs
   - Loss : Huber (age, delta=8) + BCE (gender) + Focal (ethnicity, gamma=2.0, label_smoothing=0.1)
   - Loss weights : age=0.4, gender=1.0, ethnicity=1.0
   - Augmentation : RandomFlip, RandomRotation, RandomZoom, RandomBrightness, RandomContrast
