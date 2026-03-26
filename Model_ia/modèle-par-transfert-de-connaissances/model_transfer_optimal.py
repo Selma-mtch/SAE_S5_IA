@@ -24,7 +24,7 @@
 
 4. **3 phases de fine-tuning**
    - Phase 1 : head seul (lr=1e-3)
-   - Phase 2 : top 20 couches (lr=1e-4)
+   - Phase 2 : top 10 couches (lr=5e-5)
    - Phase 3 : top 50 couches (lr=1e-5)
 
 5. **Mixed precision** (float16) pour accélérer le training
@@ -356,14 +356,14 @@ print(f"\nPhase 1 terminée - Ethnicity val acc : {phase1_eth_acc*100:.2f}%")
 print(f"Phase 1 terminée - Gender val acc : {phase1_gender_acc*100:.2f}%")
 
 # %% [code]
-"""## 7. Phase 2 : Fine-tuning des couches hautes (top 20)"""
+"""## 7. Phase 2 : Fine-tuning des couches hautes (top 10)"""
 
 base_model.trainable = True
-for layer in base_model.layers[:-20]:
+for layer in base_model.layers[:-10]:
     layer.trainable = False
 
 model.compile(
-    optimizer=Adam(learning_rate=1e-4),
+    optimizer=Adam(learning_rate=5e-5),
     loss={
         'age': tf.keras.losses.Huber(delta=8.0),
         'gender': 'binary_crossentropy',
@@ -375,15 +375,15 @@ model.compile(
 
 trainable_params = sum(tf.keras.backend.count_params(w) for w in model.trainable_weights)
 print(f"Phase 2 - Paramètres entraînables : {trainable_params:,}")
-print(f"Couches débloquées : 20 dernières couches d'EfficientNetB0")
+print(f"Couches débloquées : 10 dernières couches d'EfficientNetB0")
 
-early_stop2 = EarlyStopping(monitor='val_ethnicity_accuracy', mode='max', patience=10, restore_best_weights=True, start_from_epoch=30, verbose=1)
-reduce_lr2 = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6, verbose=1)
+early_stop2 = EarlyStopping(monitor='val_ethnicity_accuracy', mode='max', patience=8, restore_best_weights=True, start_from_epoch=25, verbose=1)
+reduce_lr2 = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-7, verbose=1)
 
 print("\n" + "=" * 60)
-print("PHASE 2 : FINE-TUNING TOP 20 COUCHES")
+print("PHASE 2 : FINE-TUNING TOP 10 COUCHES")
 print("=" * 60)
-print("  - Learning rate : 0.0001")
+print("  - Learning rate : 0.00005")
 print("  - Epochs : 50")
 
 history2 = model.fit(
@@ -449,7 +449,7 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
 axes[0].plot(all_loss, label='Train', linewidth=2, marker='o', markersize=2)
 axes[0].plot(all_val_loss, label='Validation', linewidth=2, marker='s', markersize=2)
-axes[0].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 20)')
+axes[0].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 10)')
 axes[0].set_title('Loss totale durant l\'entraînement', fontsize=12)
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Loss')
@@ -458,7 +458,7 @@ axes[0].grid(True, alpha=0.3)
 
 axes[1].plot(all_eth_acc, label='Train', linewidth=2, marker='o', markersize=2)
 axes[1].plot(all_val_eth_acc, label='Validation', linewidth=2, marker='s', markersize=2)
-axes[1].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 20)')
+axes[1].axvline(x=phase1_end - 0.5, color='red', linestyle='--', alpha=0.7, label='Phase 2 (top 10)')
 axes[1].set_title('Ethnicity Accuracy durant l\'entraînement', fontsize=12)
 axes[1].set_xlabel('Epoch')
 axes[1].set_ylabel('Accuracy')
@@ -474,7 +474,7 @@ print("=" * 50)
 print("RÉSUMÉ DES 2 PHASES")
 print("=" * 50)
 print(f"Phase 1 (head seul) : {len(history1.history['loss'])} epochs - Val eth acc: {phase1_eth_acc*100:.2f}% - Val gender acc: {phase1_gender_acc*100:.2f}%")
-print(f"Phase 2 (top 20)    : {len(history2.history['loss'])} epochs - Val eth acc: {phase2_eth_acc*100:.2f}% - Val gender acc: {phase2_gender_acc*100:.2f}%")
+print(f"Phase 2 (top 10)    : {len(history2.history['loss'])} epochs - Val eth acc: {phase2_eth_acc*100:.2f}% - Val gender acc: {phase2_gender_acc*100:.2f}%")
 print("Phase 3 : supprimée (causait de l'overfitting)")
 
 # %% [code]
@@ -537,49 +537,18 @@ plt.show()
 
 
 def make_gradcam_heatmap(img_array, model, base_model, pred_index=None):
-    """Génère une heatmap Grad-CAM compatible avec les modèles Keras imbriqués."""
-    last_conv_layer_name = None
-    for layer in base_model.layers[::-1]:
-        if isinstance(layer, tf.keras.layers.Conv2D):
-            last_conv_layer_name = layer.name
-            break
-
-    if last_conv_layer_name is None:
-        return np.ones((4, 4), dtype=np.float32) * 0.5
-
-    sub_base = tf.keras.Model(
-        inputs=base_model.input,
-        outputs=[base_model.get_layer(last_conv_layer_name).output, base_model.output]
+    """Génère une heatmap Grad-CAM pour la branche ethnicité."""
+    # EfficientNetB0 (include_top=False) output = feature maps (batch, h, w, 1280)
+    # On utilise directement cette sortie pour le Grad-CAM
+    # Un seul Model qui extrait feature maps + ethnicité dans le même graphe
+    grad_model = tf.keras.Model(
+        inputs=model.input,
+        outputs=[model.get_layer(base_model.name).output, model.output[2]]
     )
 
-    # Build a mini-model for the ethnicity head path
-    # We need to manually trace through the model layers after the base model
-    head_layers = []
-    found_base = False
-    for layer in model.layers:
-        if layer.name == base_model.name:
-            found_base = True
-            continue
-        if found_base:
-            head_layers.append(layer)
-
     with tf.GradientTape() as tape:
-        conv_outputs, base_features = sub_base(img_array, training=False)
+        conv_outputs, predictions = grad_model(img_array)
         tape.watch(conv_outputs)
-
-        # Trace through layers to get ethnicity output
-        # For multi-output, we need to trace through the graph manually
-        x = base_features
-        for layer in head_layers:
-            if layer.name == 'ethnicity':
-                # This is the ethnicity output layer - use it for grad-cam
-                x = layer(x, training=False)
-                break
-            try:
-                x = layer(x, training=False)
-            except:
-                continue
-        predictions = x
 
         if pred_index is None:
             pred_index = tf.argmax(predictions[0])
@@ -896,7 +865,7 @@ Architecture :
 
 Entraînement :
   - Phase 1 : Head seul (lr=1e-3) - {len(history1.history['loss'])} epochs
-  - Phase 2 : Top 20 couches (lr=1e-4) - {len(history2.history['loss'])} epochs
+  - Phase 2 : Top 10 couches (lr=5e-5) - {len(history2.history['loss'])} epochs
   - Phase 3 : Top 50 couches (lr=1e-5) - {len(history3.history['loss'])} epochs
   - Loss : Huber (age, delta=8) + BCE (gender) + Focal (ethnicity, gamma=2.0, label_smoothing=0.1)
   - Loss weights : age=0.4, gender=1.0, ethnicity=1.0

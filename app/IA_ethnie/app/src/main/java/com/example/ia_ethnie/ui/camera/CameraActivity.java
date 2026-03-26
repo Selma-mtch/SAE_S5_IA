@@ -146,6 +146,7 @@ public class CameraActivity extends AppCompatActivity {
         Bitmap bitmap = imageProxyToBitmap(image);
         if (bitmap != null) {
             FaceAnalyzer.PredictionResult result = faceAnalyzer.analyze(bitmap);
+            bitmap.recycle();
 
             runOnUiThread(() -> {
                 binding.tvRealtimeAge.setText(String.valueOf(result.age));
@@ -178,6 +179,7 @@ public class CameraActivity extends AppCompatActivity {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             yuvImage.compressToJpeg(new Rect(0, 0, image.getWidth(), image.getHeight()), 75, out);
             byte[] imageBytes = out.toByteArray();
+            out.close();
 
             Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
 
@@ -186,7 +188,9 @@ public class CameraActivity extends AppCompatActivity {
                 Matrix matrix = new Matrix();
                 matrix.postRotate(image.getImageInfo().getRotationDegrees());
                 matrix.postScale(-1, 1);
-                return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                bitmap.recycle();
+                return rotated;
             }
 
             return bitmap;

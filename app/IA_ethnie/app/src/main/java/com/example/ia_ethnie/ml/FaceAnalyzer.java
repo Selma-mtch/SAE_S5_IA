@@ -28,6 +28,10 @@ public class FaceAnalyzer {
     private boolean useGpu = false;
     private ModelType currentModelType = ModelType.MULTI_TASK;
 
+    // Buffers réutilisables pour éviter les allocations à chaque frame
+    private ByteBuffer grayscaleBuffer;
+    private ByteBuffer rgbBuffer;
+
     public static final String[] ETHNICITY_LABELS = {"Blanc", "Noir", "Asiatique", "Indien", "Autre"};
     public static final String[] GENDER_LABELS = {"Homme", "Femme"};
 
@@ -60,6 +64,10 @@ public class FaceAnalyzer {
     }
 
     public FaceAnalyzer(Context context) {
+        grayscaleBuffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 4);
+        grayscaleBuffer.order(ByteOrder.nativeOrder());
+        rgbBuffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * 4);
+        rgbBuffer.order(ByteOrder.nativeOrder());
         loadModels(context);
     }
 
@@ -116,12 +124,15 @@ public class FaceAnalyzer {
     }
 
     private MappedByteBuffer loadModelFile(Context context, String modelName) throws IOException {
-        FileInputStream fis = new FileInputStream(
-                context.getAssets().openFd(modelName).getFileDescriptor());
-        FileChannel fileChannel = fis.getChannel();
-        long startOffset = context.getAssets().openFd(modelName).getStartOffset();
-        long declaredLength = context.getAssets().openFd(modelName).getDeclaredLength();
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+        android.content.res.AssetFileDescriptor afd = context.getAssets().openFd(modelName);
+        try (FileInputStream fis = new FileInputStream(afd.getFileDescriptor())) {
+            FileChannel fileChannel = fis.getChannel();
+            long startOffset = afd.getStartOffset();
+            long declaredLength = afd.getDeclaredLength();
+            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+        } finally {
+            afd.close();
+        }
     }
 
     public void setModelType(ModelType type) {
@@ -135,15 +146,24 @@ public class FaceAnalyzer {
     public PredictionResult analyze(Bitmap bitmap) {
         Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true);
 
+        PredictionResult result;
         switch (currentModelType) {
             case SPECIALIZED:
-                return analyzeWithSpecializedModels(resizedBitmap);
+                result = analyzeWithSpecializedModels(resizedBitmap);
+                break;
             case TRANSFER:
-                return analyzeWithTransferModel(preprocessRGB(resizedBitmap));
+                result = analyzeWithTransferModel(preprocessRGB(resizedBitmap));
+                break;
             case MULTI_TASK:
             default:
-                return analyzeWithMultiTaskModel(preprocessGrayscale(resizedBitmap));
+                result = analyzeWithMultiTaskModel(preprocessGrayscale(resizedBitmap));
+                break;
         }
+
+        if (resizedBitmap != bitmap) {
+            resizedBitmap.recycle();
+        }
+        return result;
     }
 
     /**
@@ -151,8 +171,7 @@ public class FaceAnalyzer {
      * 1 canal, shape: (1, 128, 128, 1)
      */
     private ByteBuffer preprocessGrayscale(Bitmap bitmap) {
-        ByteBuffer buffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 4);
-        buffer.order(ByteOrder.nativeOrder());
+        grayscaleBuffer.rewind();
 
         int[] pixels = new int[INPUT_SIZE * INPUT_SIZE];
         bitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE);
@@ -162,11 +181,11 @@ public class FaceAnalyzer {
             int g = (pixel >> 8) & 0xFF;
             int b = pixel & 0xFF;
             float gray = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f;
-            buffer.putFloat(gray);
+            grayscaleBuffer.putFloat(gray);
         }
 
-        buffer.rewind();
-        return buffer;
+        grayscaleBuffer.rewind();
+        return grayscaleBuffer;
     }
 
     /**
@@ -174,8 +193,7 @@ public class FaceAnalyzer {
      * 3 canaux, shape: (1, 128, 128, 3)
      */
     private ByteBuffer preprocessRGB(Bitmap bitmap) {
-        ByteBuffer buffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * 4);
-        buffer.order(ByteOrder.nativeOrder());
+        rgbBuffer.rewind();
 
         int[] pixels = new int[INPUT_SIZE * INPUT_SIZE];
         bitmap.getPixels(pixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE);
@@ -184,14 +202,14 @@ public class FaceAnalyzer {
             int r = (pixel >> 16) & 0xFF;
             int g = (pixel >> 8) & 0xFF;
             int b = pixel & 0xFF;
-            // EfficientNet preprocess_input : normalise en [-1, 1]
-            buffer.putFloat(r / 127.5f - 1.0f);
-            buffer.putFloat(g / 127.5f - 1.0f);
-            buffer.putFloat(b / 127.5f - 1.0f);
+            // MobileNetV2 preprocess_input : normalise en [-1, 1]
+            rgbBuffer.putFloat(r / 127.5f - 1.0f);
+            rgbBuffer.putFloat(g / 127.5f - 1.0f);
+            rgbBuffer.putFloat(b / 127.5f - 1.0f);
         }
 
-        buffer.rewind();
-        return buffer;
+        rgbBuffer.rewind();
+        return rgbBuffer;
     }
 
     private PredictionResult analyzeWithMultiTaskModel(ByteBuffer inputBuffer) {

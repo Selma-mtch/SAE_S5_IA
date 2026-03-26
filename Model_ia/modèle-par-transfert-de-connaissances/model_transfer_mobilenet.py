@@ -164,9 +164,21 @@ for layer in base_model.layers[:-20]:
 # On baisse le learning rate pour ne pas tout casser
 model.compile(
     optimizer=optimizers.Adam(learning_rate=1e-5),
-    loss=model.loss,
-    loss_weights=model.loss_weights,
-    metrics=model.metrics
+    loss={
+        'age_output': 'huber',
+        'gender_output': 'categorical_crossentropy',
+        'race_output': 'categorical_crossentropy'
+    },
+    loss_weights={
+        'age_output': 1.0,
+        'gender_output': 1.0,
+        'race_output': 1.5
+    },
+    metrics={
+        'age_output': 'mae',
+        'gender_output': 'accuracy',
+        'race_output': 'accuracy'
+    }
 )
 
 history2 = model.fit(
@@ -187,19 +199,115 @@ results = model.evaluate(X_test, {
 })
 
 # --- 6. On affiche nos courbes pour voir si on a bien appris ---
-plt.figure(figsize=(15, 5))
-plt.subplot(1, 2, 1)
-plt.plot(history1.history['loss'] + history2.history['loss'], label='Total Loss')
-plt.title('Notre courbe de perte')
-plt.legend()
 
-plt.subplot(1, 2, 2)
-plt.plot(history1.history['race_output_accuracy'] + history2.history['race_output_accuracy'], label='Race Acc')
-plt.plot(history1.history['gender_output_accuracy'] + history2.history['gender_output_accuracy'], label='Gender Acc')
-plt.title('Nos scores de précision')
+# On fusionne les historiques des 2 phases
+def merge_histories(h1, h2, key):
+    return h1.history.get(key, []) + h2.history.get(key, [])
+
+epochs_total = range(1, len(merge_histories(history1, history2, 'loss')) + 1)
+fine_tune_start = len(history1.history['loss'])
+
+# --- Graphique 1 : Loss totale (train vs val) ---
+plt.figure(figsize=(16, 10))
+
+plt.subplot(2, 3, 1)
+plt.plot(epochs_total, merge_histories(history1, history2, 'loss'), label='Train')
+plt.plot(epochs_total, merge_histories(history1, history2, 'val_loss'), label='Validation')
+plt.axvline(x=fine_tune_start, color='gray', linestyle='--', label='Début Fine-tuning')
+plt.title('Loss totale')
+plt.xlabel('Époque')
+plt.ylabel('Loss')
 plt.legend()
+plt.grid(True, alpha=0.3)
+
+# --- Graphique 2 : MAE Âge (train vs val) ---
+plt.subplot(2, 3, 2)
+plt.plot(epochs_total, merge_histories(history1, history2, 'age_output_mae'), label='Train')
+plt.plot(epochs_total, merge_histories(history1, history2, 'val_age_output_mae'), label='Validation')
+plt.axvline(x=fine_tune_start, color='gray', linestyle='--', label='Début Fine-tuning')
+plt.title('MAE - Âge')
+plt.xlabel('Époque')
+plt.ylabel('MAE (années)')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# --- Graphique 3 : Accuracy Genre (train vs val) ---
+plt.subplot(2, 3, 3)
+plt.plot(epochs_total, merge_histories(history1, history2, 'gender_output_accuracy'), label='Train')
+plt.plot(epochs_total, merge_histories(history1, history2, 'val_gender_output_accuracy'), label='Validation')
+plt.axvline(x=fine_tune_start, color='gray', linestyle='--', label='Début Fine-tuning')
+plt.title('Accuracy - Genre')
+plt.xlabel('Époque')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# --- Graphique 4 : Accuracy Ethnie (train vs val) ---
+plt.subplot(2, 3, 4)
+plt.plot(epochs_total, merge_histories(history1, history2, 'race_output_accuracy'), label='Train')
+plt.plot(epochs_total, merge_histories(history1, history2, 'val_race_output_accuracy'), label='Validation')
+plt.axvline(x=fine_tune_start, color='gray', linestyle='--', label='Début Fine-tuning')
+plt.title('Accuracy - Ethnie')
+plt.xlabel('Époque')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# --- Graphique 5 : Loss par tâche ---
+plt.subplot(2, 3, 5)
+plt.plot(epochs_total, merge_histories(history1, history2, 'age_output_loss'), label='Âge')
+plt.plot(epochs_total, merge_histories(history1, history2, 'gender_output_loss'), label='Genre')
+plt.plot(epochs_total, merge_histories(history1, history2, 'race_output_loss'), label='Ethnie')
+plt.axvline(x=fine_tune_start, color='gray', linestyle='--', label='Début Fine-tuning')
+plt.title('Loss par tâche (Train)')
+plt.xlabel('Époque')
+plt.ylabel('Loss')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# --- Graphique 6 : Résumé des performances finales ---
+plt.subplot(2, 3, 6)
+metric_names = ['MAE Âge', 'Acc. Genre', 'Acc. Ethnie']
+final_train = [
+    merge_histories(history1, history2, 'age_output_mae')[-1],
+    merge_histories(history1, history2, 'gender_output_accuracy')[-1],
+    merge_histories(history1, history2, 'race_output_accuracy')[-1],
+]
+final_val = [
+    merge_histories(history1, history2, 'val_age_output_mae')[-1],
+    merge_histories(history1, history2, 'val_gender_output_accuracy')[-1],
+    merge_histories(history1, history2, 'val_race_output_accuracy')[-1],
+]
+x_pos = np.arange(len(metric_names))
+plt.bar(x_pos - 0.15, final_train, 0.3, label='Train')
+plt.bar(x_pos + 0.15, final_val, 0.3, label='Validation')
+plt.xticks(x_pos, metric_names)
+plt.title('Performances finales')
+plt.legend()
+plt.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig('courbes_entrainement_mobilenet.png', dpi=150, bbox_inches='tight')
 plt.show()
+print("Graphiques sauvegardés dans courbes_entrainement_mobilenet.png")
 
-# On sauvegarde notre bébé
+# --- 7. On sauvegarde notre modèle ---
 model.save("model_transfer_mobilenet_v1.keras")
-print("C'est fini ! Modèle sauvegardé sous model_transfer_mobilenet_v1.keras")
+print("Modèle Keras sauvegardé sous model_transfer_mobilenet_v1.keras")
+
+# --- 8. Export TensorFlow Lite ---
+print("\nConversion en TensorFlow Lite...")
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.target_spec.supported_types = [tf.float16]
+tflite_model = converter.convert()
+
+tflite_path = "model_transfer_mobilenet_v1.tflite"
+with open(tflite_path, 'wb') as f:
+    f.write(tflite_model)
+
+tflite_size_mb = os.path.getsize(tflite_path) / (1024 * 1024)
+keras_size_mb = os.path.getsize("model_transfer_mobilenet_v1.keras") / (1024 * 1024)
+print(f"Modèle TFLite sauvegardé : {tflite_path} ({tflite_size_mb:.2f} Mo)")
+print(f"Réduction de taille : {keras_size_mb:.2f} Mo → {tflite_size_mb:.2f} Mo ({(1 - tflite_size_mb/keras_size_mb)*100:.0f}% plus léger)")
+print("\nC'est fini !")

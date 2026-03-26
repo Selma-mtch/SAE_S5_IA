@@ -295,7 +295,7 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     x = layers.Add()([x, shortcut])
 
     x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.2)(x)
+    x = layers.Dropout(0.1)(x)
 
     # ================================================================
     # BLOC 2 : 96 filtres
@@ -314,7 +314,7 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     x = layers.Add()([x, shortcut])
 
     x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.3)(x)
+    x = layers.Dropout(0.15)(x)
 
     # ================================================================
     # BLOC 3 : 192 filtres
@@ -333,7 +333,7 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     x = layers.Add()([x, shortcut])
 
     x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.4)(x)
+    x = layers.Dropout(0.2)(x)
 
     # ================================================================
     # BLOC 4 : 384 filtres
@@ -352,16 +352,16 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     x = layers.Add()([x, shortcut])
 
     x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Dropout(0.5)(x)
+    x = layers.Dropout(0.25)(x)
 
     # ================================================================
     # HEAD : Classification binaire
     # ================================================================
     x = layers.GlobalAveragePooling2D()(x)
     x = layers.Dense(512, activation='relu', kernel_regularizer=l2(1e-4))(x)
-    x = layers.Dropout(0.4)(x)
-    x = layers.Dense(128, activation='relu', kernel_regularizer=l2(1e-4))(x)
     x = layers.Dropout(0.3)(x)
+    x = layers.Dense(128, activation='relu', kernel_regularizer=l2(1e-4))(x)
+    x = layers.Dropout(0.2)(x)
     outputs = layers.Dense(1, activation='sigmoid')(x)
 
     model = models.Model(inputs, outputs, name='CNN_Genre_Optimal')
@@ -371,9 +371,14 @@ def build_optimal_model(input_shape=(128, 128, 3)):
 # Créer le modèle
 model = build_optimal_model(input_shape=(IMG_SIZE, IMG_SIZE, 3))
 
+# Class weights pour gérer le déséquilibre (plus stable que focal loss pour un CNN from scratch)
+class_weights = compute_class_weight('balanced', classes=np.array([0, 1]), y=y_train)
+class_weight_dict = {0: class_weights[0], 1: class_weights[1]}
+print(f"Class weights : {class_weight_dict}")
+
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
-    loss=binary_focal_loss_smooth(gamma=2.0, alpha=alpha_focal, label_smoothing=0.05),
+    loss='binary_crossentropy',
     metrics=['accuracy']
 )
 
@@ -384,11 +389,11 @@ print("MODÈLE 5 : ARCHITECTURE OPTIMALE - GENRE")
 print(f"{'='*60}")
 print(f"""
 Architecture élargie (4 blocs) :
-  - Bloc 1 : Conv2D(48) + SE(4) + Skip + Dropout(0.2)
-  - Bloc 2 : SeparableConv2D(96) + SE(8) + Skip + Dropout(0.3)
-  - Bloc 3 : SeparableConv2D(192) + SE(8) + Skip + Dropout(0.4)
-  - Bloc 4 : SeparableConv2D(384) + SE(16) + Skip + Dropout(0.5)
-  - Head : GAP → Dense(512) → Dropout(0.4) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+  - Bloc 1 : Conv2D(48) + SE(4) + Skip + Dropout(0.1)
+  - Bloc 2 : SeparableConv2D(96) + SE(8) + Skip + Dropout(0.15)
+  - Bloc 3 : SeparableConv2D(192) + SE(8) + Skip + Dropout(0.2)
+  - Bloc 4 : SeparableConv2D(384) + SE(16) + Skip + Dropout(0.25)
+  - Head : GAP → Dense(512) → Dropout(0.3) → Dense(128) → Dropout(0.2) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
@@ -397,8 +402,8 @@ Techniques combinées :
   - SE-Net : Channel attention
   - Separable Conv : Réduction paramètres
   - L2 regularization : 1e-4
-  - Dropout progressif : 0.2 → 0.3 → 0.4 → 0.5
-  - Binary Focal Loss (gamma=2.0, alpha={alpha_focal:.4f}, label_smoothing=0.05)
+  - Dropout progressif : 0.1 → 0.15 → 0.2 → 0.25
+  - Binary Crossentropy + Class Weights
   - Data augmentation renforcée
 """)
 
@@ -427,7 +432,7 @@ print("PHASE 1 : ENTRAÎNEMENT PRINCIPAL (lr=1e-3)")
 print("=" * 60)
 print("Configuration :")
 print("  - Architecture : 4 blocs (48→96→192→384) + SE + Skip + L2")
-print("  - Loss : Binary Focal Loss (gamma=2.0, label_smoothing=0.05)")
+print("  - Loss : Binary Crossentropy + Class Weights")
 print("  - Optimizer : Adam (lr=0.001)")
 print("  - Epochs : 40 (min 20)")
 
@@ -436,6 +441,7 @@ history1 = model.fit(
     validation_data=(X_val, y_val),
     epochs=40,
     batch_size=32,
+    class_weight=class_weight_dict,
     callbacks=[early_stop1, reduce_lr1]
 )
 
@@ -446,7 +452,7 @@ print(f"\nPhase 1 terminée - Meilleure accuracy val : {max(history1.history['va
 
 model.compile(
     optimizer=Adam(learning_rate=1e-4),
-    loss=binary_focal_loss_smooth(gamma=2.0, alpha=alpha_focal, label_smoothing=0.05),
+    loss='binary_crossentropy',
     metrics=['accuracy']
 )
 
@@ -478,6 +484,7 @@ history2 = model.fit(
     validation_data=(X_val, y_val),
     epochs=30,
     batch_size=32,
+    class_weight=class_weight_dict,
     callbacks=[early_stop2, reduce_lr2]
 )
 
@@ -741,74 +748,14 @@ print("\n" + "=" * 60)
 print("EXPORT TENSORFLOW LITE")
 print("=" * 60)
 
-# Construire un modèle d'inférence SANS augmentation
-# On reconstruit le graphe en sautant les couches d'augmentation
-inference_inputs = layers.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
-
-# Parcourir les couches du modèle entraîné en sautant l'augmentation
-x_inf = inference_inputs
-skip_augmentation = True
-layer_output_map = {}
-
-for layer in model.layers:
-    # Skip Input layer
-    if isinstance(layer, tf.keras.layers.InputLayer):
-        continue
-
-    # Skip data_augmentation Sequential
-    if layer.name == 'data_augmentation':
-        skip_augmentation = False
-        continue
-
-    # Déterminer l'entrée de cette couche
-    inbound_nodes = layer.inbound_nodes
-    if len(inbound_nodes) == 0:
-        continue
-
-    # Récupérer les tensors d'entrée originaux
-    input_tensors = inbound_nodes[0].input_tensors
-    if not isinstance(input_tensors, list):
-        input_tensors = [input_tensors]
-
-    # Mapper les inputs
-    mapped_inputs = []
-    for t in input_tensors:
-        t_ref = t.ref()
-        if t_ref in layer_output_map:
-            mapped_inputs.append(layer_output_map[t_ref])
-        else:
-            mapped_inputs.append(x_inf)
-
-    # Appliquer la couche
-    if len(mapped_inputs) == 1:
-        out = layer(mapped_inputs[0])
-    else:
-        out = layer(mapped_inputs)
-
-    # Enregistrer le output
-    if isinstance(layer.output, list):
-        for t in layer.output:
-            layer_output_map[t.ref()] = out
-    else:
-        layer_output_map[layer.output.ref()] = out
-
-# La sortie finale
-inference_output = out
-
-inference_model = models.Model(inference_inputs, inference_output, name='CNN_Genre_Optimal_Inference')
-print(f"Modèle d'inférence créé : {inference_model.count_params():,} paramètres")
-
-# Vérifier que les prédictions sont identiques
-test_img = X_test[:1]
-pred_original = model.predict(test_img, verbose=0)
-pred_inference = inference_model.predict(test_img, verbose=0)
-diff = np.max(np.abs(pred_original - pred_inference))
-print(f"Vérification des poids : diff max = {diff:.6f}")
+# Les couches d'augmentation (RandomFlip, RandomRotation, etc.) sont
+# automatiquement désactivées en mode inférence (training=False).
+# On peut donc exporter le modèle directement sans reconstruire le graphe.
 
 # Export TFLite
 tflite_path = os.path.join(OUTPUT_PATH, 'gender_optimal.tflite')
 
-converter = tf.lite.TFLiteConverter.from_keras_model(inference_model)
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 converter.target_spec.supported_types = [tf.float16]
 
@@ -847,11 +794,11 @@ print("=" * 60)
 print(f"""
 Architecture :
   - Type : CNN custom from scratch (pas de transfer learning)
-  - Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.2)
-  - Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
-  - Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.4)
-  - Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.5)
-  - Head : GAP → Dense(512) → Dropout(0.4) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+  - Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.1)
+  - Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.15)
+  - Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.2)
+  - Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.25)
+  - Head : GAP → Dense(512) → Dropout(0.3) → Dense(128) → Dropout(0.2) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
@@ -860,8 +807,8 @@ Techniques combinées :
   - SE-Net : Channel attention (ratios 4, 8, 8, 16)
   - Separable Conv : Blocs 2, 3, 4
   - L2 regularization : 1e-4 sur toutes les couches convolutionnelles et Dense
-  - Dropout progressif : 0.2 → 0.3 → 0.4 → 0.5
-  - Binary Focal Loss : gamma=2.0, alpha={alpha_focal:.4f}, label_smoothing=0.05
+  - Dropout progressif : 0.1 → 0.15 → 0.2 → 0.25
+  - Binary Crossentropy + Class Weights
   - Data augmentation renforcée : Flip, Rotation, Zoom, Translation, Brightness, Contrast
   - Architecture élargie : 4 blocs (48 → 96 → 192 → 384 filtres)
 
