@@ -124,6 +124,7 @@ public class FaceAnalyzer {
         } catch (Exception e) {
             android.util.Log.e("FaceAnalyzer", "model_transfer.tflite ERREUR: " + e.getMessage(), e);
         }
+
     }
 
     private MappedByteBuffer loadModelFile(Context context, String modelName) throws IOException {
@@ -441,17 +442,28 @@ public class FaceAnalyzer {
             ByteBuffer rgbBuffer = preprocessRGB(bitmap);
             float[][] ageOutput = new float[1][1];
             ageInterpreter.run(rgbBuffer, ageOutput);
-            predictedAge = Math.round(ageOutput[0][0]);
+            // Si la sortie est normalisée [0,1], dé-normaliser en multipliant par 100
+            float ageRaw = ageOutput[0][0];
+            predictedAge = Math.round(ageRaw <= 1.0f ? ageRaw * 100.0f : ageRaw);
             ageConfidence = 1.0f;
         }
 
         // Modèle genre (grayscale [0, 1])
         if (genderInterpreter != null) {
             ByteBuffer grayBuffer = preprocessGrayscale(bitmap);
-            float[][] genderOutput = new float[1][NUM_GENDER_CLASSES];
+            int genderOutputSize = genderInterpreter.getOutputTensor(0).shape()[1];
+            float[][] genderOutput = new float[1][genderOutputSize];
             genderInterpreter.run(grayBuffer, genderOutput);
-            genderIndex = argMax(genderOutput[0]);
-            genderConfidence = genderOutput[0][genderIndex];
+            if (genderOutputSize >= NUM_GENDER_CLASSES) {
+                // Softmax 2 classes
+                genderIndex = argMax(genderOutput[0]);
+                genderConfidence = genderOutput[0][genderIndex];
+            } else {
+                // Sigmoid 1 classe : >0.5 = Femme
+                float sig = genderOutput[0][0];
+                genderIndex = sig >= 0.5f ? 1 : 0;
+                genderConfidence = genderIndex == 1 ? sig : (1.0f - sig);
+            }
         }
 
         // Modèle ethnicité (grayscale [0, 1])
