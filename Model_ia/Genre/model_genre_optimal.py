@@ -5,20 +5,18 @@
 
 **Entraînement sur Kaggle**
 
-**Approche :** CNN custom from scratch combinant toutes les techniques optimales
-- 4 blocs convolutionnels élargis (48 → 96 → 192 → 384 filtres)
+**Approche :** CNN custom from scratch combinant les meilleures techniques
+- 4 blocs convolutionnels (32 → 64 → 128 → 256 filtres)
 - ResNet (Skip Connections) + SE-Net (Channel Attention) + Separable Conv
 - Binary Crossentropy + Class Weights
-- Dropout progressif (0.25 → 0.25 → 0.3 → 0.3)
-- Entraînement en 2 phases (lr=1e-3 puis lr=1e-4)
-- Data Augmentation renforcée intégrée au modèle
+- Data Augmentation intégrée au modèle
 
 **Architecture :**
-- Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
-- Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
-- Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
-- Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
-- GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+- Bloc 1 : Conv2D(32) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
+- Bloc 2 : SeparableConv2D(64) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
+- Bloc 3 : SeparableConv2D(128) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
+- Bloc 4 : SeparableConv2D(256) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
+- GAP → Dense(256) → Dropout(0.5) → Dense(1, sigmoid)
 
 **Preprocessing :**
 - Images RGB (3 canaux)
@@ -46,9 +44,7 @@ from sklearn.metrics import (
     precision_recall_fscore_support, roc_auc_score, average_precision_score
 )
 from tensorflow.keras import layers, models
-from tensorflow.keras import backend as K
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 # Reproductibilité
@@ -158,61 +154,18 @@ print(f"\nX_train : {X_train.shape}")
 print(f"X_val   : {X_val.shape}")
 print(f"X_test  : {X_test.shape}")
 
-# Calcul de alpha à partir de la distribution des données
-n_pos = np.sum(y_train == 1)
-n_neg = np.sum(y_train == 0)
-alpha_focal = n_neg / (n_pos + n_neg)
-print(f"\nAlpha pour Focal Loss (calculé depuis la distribution) : {alpha_focal:.4f}")
+# Class weights
+class_weights = compute_class_weight('balanced', classes=np.array([0, 1]), y=y_train)
+class_weight_dict = {0: class_weights[0], 1: class_weights[1]}
+print(f"\nClass weights : {class_weight_dict}")
 
 # %% [code]
-"""## 3. Binary Focal Loss avec Label Smoothing
-
-La Focal Loss modifie la binary cross-entropy :
-- FL(p) = -alpha * (1-p)^gamma * log(p)
-- gamma > 0 : réduit la contribution des exemples bien classifiés
-- alpha : pondère selon le déséquilibre des classes
-- Label smoothing : adoucit les labels pour meilleure généralisation
-"""
-
-
-def binary_focal_loss_smooth(gamma=2.0, alpha=0.5, label_smoothing=0.05):
-    """
-    Binary Focal Loss avec Label Smoothing.
-
-    Args:
-        gamma: Facteur de focalisation (2.0 = standard)
-        alpha: Poids pour la classe positive
-        label_smoothing: Facteur de lissage des labels
-
-    Returns:
-        Fonction de loss compatible Keras
-    """
-    def focal_loss_fixed(y_true, y_pred):
-        epsilon = K.epsilon()
-        y_pred = K.clip(y_pred, epsilon, 1.0 - epsilon)
-
-        # Label smoothing
-        y_true_smooth = y_true * (1.0 - label_smoothing) + label_smoothing * 0.5
-
-        # Focal weight
-        p_t = y_true_smooth * y_pred + (1 - y_true_smooth) * (1 - y_pred)
-        alpha_t = y_true_smooth * alpha + (1 - y_true_smooth) * (1 - alpha)
-        focal_weight = K.pow(1.0 - p_t, gamma)
-
-        loss = -alpha_t * focal_weight * K.log(p_t + epsilon)
-        return K.mean(loss)
-
-    return focal_loss_fixed
-
-
-# %% [code]
-"""## 4. Data Augmentation renforcée"""
+"""## 3. Data Augmentation"""
 
 data_augmentation = tf.keras.Sequential([
     layers.RandomFlip("horizontal"),
-    layers.RandomRotation(0.06),
-    layers.RandomZoom((-0.15, 0.15)),
-    layers.RandomTranslation(0.05, 0.05),
+    layers.RandomRotation(0.05),
+    layers.RandomZoom((-0.1, 0.1)),
     layers.RandomBrightness(0.15),
     layers.RandomContrast(0.15),
 ], name='data_augmentation')
@@ -222,39 +175,19 @@ for layer in data_augmentation.layers:
     print(f"  - {layer.name}")
 
 # %% [code]
-"""## 5. Construction du modèle - Architecture Optimale
+"""## 4. Construction du modèle - Architecture Optimale
 
 SE-Block (Squeeze-and-Excitation) + ResNet Skip Connections + Separable Conv
-+ L2 Regularization + Dropout progressif + Architecture élargie (4 blocs)
 """
 
 
 def se_block(x, ratio=8):
-    """
-    Squeeze-and-Excitation Block
-
-    Apprend l'importance de chaque channel/filtre.
-
-    Args:
-        x: Input tensor
-        ratio: Ratio de réduction pour le bottleneck
-
-    Returns:
-        Tensor recalibré
-    """
+    """Squeeze-and-Excitation Block : apprend l'importance de chaque channel."""
     filters = x.shape[-1]
-
-    # Squeeze : moyenne globale par channel
     se = layers.GlobalAveragePooling2D()(x)
-
-    # Excitation : apprendre les poids
     se = layers.Dense(filters // ratio, activation='relu')(se)
     se = layers.Dense(filters, activation='sigmoid')(se)
-
-    # Reshape pour multiplication
     se = layers.Reshape((1, 1, filters))(se)
-
-    # Recalibration
     return layers.Multiply()([x, se])
 
 
@@ -262,112 +195,69 @@ def build_optimal_model(input_shape=(128, 128, 3)):
     """
     Architecture Optimale pour classification binaire de genre.
 
-    Structure élargie avec 4 blocs :
-    - Bloc 1 : 48 filtres (Conv2D + SE + Skip)
-    - Bloc 2 : 96 filtres (SeparableConv2D + SE + Skip)
-    - Bloc 3 : 192 filtres (SeparableConv2D + SE + Skip)
-    - Bloc 4 : 384 filtres (SeparableConv2D + SE + Skip)
-    - Head : GAP → Dense(512) → Dense(128) → Dense(1, sigmoid)
-
-    Techniques :
-    - ResNet : Skip connections
-    - SE-Net : Channel attention
-    - Separable Conv : Réduction paramètres
-    - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
-    - Data augmentation intégrée
+    - Bloc 1 : Conv2D(32) + SE(4) + Skip → Dropout(0.25)
+    - Bloc 2 : SeparableConv2D(64) + SE(8) + Skip → Dropout(0.25)
+    - Bloc 3 : SeparableConv2D(128) + SE(8) + Skip → Dropout(0.3)
+    - Bloc 4 : SeparableConv2D(256) + SE(16) + Skip → Dropout(0.3)
+    - Head : GAP → Dense(256) → Dropout(0.5) → Dense(1, sigmoid)
     """
     inputs = layers.Input(shape=input_shape)
-
-    # Data augmentation (active uniquement pendant l'entraînement)
     augmented = data_augmentation(inputs)
 
-    # ================================================================
-    # BLOC 1 : 48 filtres
-    # ================================================================
-    x = layers.Conv2D(48, (3, 3), padding='same')(augmented)
+    # Bloc 1 : 32 filtres
+    x = layers.Conv2D(32, (3, 3), padding='same')(augmented)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = se_block(x, ratio=4)
-
-    # Skip connection : adapter l'input à 48 channels
-    shortcut = layers.Conv2D(48, (1, 1), padding='same')(augmented)
+    shortcut = layers.Conv2D(32, (1, 1), padding='same')(augmented)
     x = layers.Add()([x, shortcut])
-
     x = layers.MaxPooling2D((2, 2))(x)
     x = layers.Dropout(0.25)(x)
 
-    # ================================================================
-    # BLOC 2 : 96 filtres
-    # ================================================================
+    # Bloc 2 : 64 filtres
     shortcut = x
-
-    x = layers.SeparableConv2D(96, (3, 3), padding='same')(x)
+    x = layers.SeparableConv2D(64, (3, 3), padding='same')(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = se_block(x, ratio=8)
-
-    # Skip connection : adapter 48 → 96 channels
-    shortcut = layers.Conv2D(96, (1, 1), padding='same')(shortcut)
+    shortcut = layers.Conv2D(64, (1, 1), padding='same')(shortcut)
     x = layers.Add()([x, shortcut])
-
     x = layers.MaxPooling2D((2, 2))(x)
     x = layers.Dropout(0.25)(x)
 
-    # ================================================================
-    # BLOC 3 : 192 filtres
-    # ================================================================
+    # Bloc 3 : 128 filtres
     shortcut = x
-
-    x = layers.SeparableConv2D(192, (3, 3), padding='same')(x)
+    x = layers.SeparableConv2D(128, (3, 3), padding='same')(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = se_block(x, ratio=8)
-
-    # Skip connection : adapter 96 → 192 channels
-    shortcut = layers.Conv2D(192, (1, 1), padding='same')(shortcut)
+    shortcut = layers.Conv2D(128, (1, 1), padding='same')(shortcut)
     x = layers.Add()([x, shortcut])
-
     x = layers.MaxPooling2D((2, 2))(x)
     x = layers.Dropout(0.3)(x)
 
-    # ================================================================
-    # BLOC 4 : 384 filtres
-    # ================================================================
+    # Bloc 4 : 256 filtres
     shortcut = x
-
-    x = layers.SeparableConv2D(384, (3, 3), padding='same')(x)
+    x = layers.SeparableConv2D(256, (3, 3), padding='same')(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('relu')(x)
     x = se_block(x, ratio=16)
-
-    # Skip connection : adapter 192 → 384 channels
-    shortcut = layers.Conv2D(384, (1, 1), padding='same')(shortcut)
+    shortcut = layers.Conv2D(256, (1, 1), padding='same')(shortcut)
     x = layers.Add()([x, shortcut])
-
     x = layers.MaxPooling2D((2, 2))(x)
     x = layers.Dropout(0.3)(x)
 
-    # ================================================================
-    # HEAD : Classification binaire
-    # ================================================================
+    # Head
     x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(512, activation='relu')(x)
+    x = layers.Dense(256, activation='relu')(x)
     x = layers.Dropout(0.5)(x)
-    x = layers.Dense(128, activation='relu')(x)
-    x = layers.Dropout(0.3)(x)
     outputs = layers.Dense(1, activation='sigmoid')(x)
 
     model = models.Model(inputs, outputs, name='CNN_Genre_Optimal')
     return model
 
 
-# Créer le modèle
 model = build_optimal_model(input_shape=(IMG_SIZE, IMG_SIZE, 3))
-
-# Class weights pour gérer le déséquilibre (plus stable que focal loss pour un CNN from scratch)
-class_weights = compute_class_weight('balanced', classes=np.array([0, 1]), y=y_train)
-class_weight_dict = {0: class_weights[0], 1: class_weights[1]}
-print(f"Class weights : {class_weight_dict}")
 
 model.compile(
     optimizer=Adam(learning_rate=1e-3),
@@ -381,37 +271,35 @@ print(f"\n{'='*60}")
 print("MODÈLE 5 : ARCHITECTURE OPTIMALE - GENRE")
 print(f"{'='*60}")
 print(f"""
-Architecture élargie (4 blocs) :
-  - Bloc 1 : Conv2D(48) + SE(4) + Skip + Dropout(0.25)
-  - Bloc 2 : SeparableConv2D(96) + SE(8) + Skip + Dropout(0.25)
-  - Bloc 3 : SeparableConv2D(192) + SE(8) + Skip + Dropout(0.3)
-  - Bloc 4 : SeparableConv2D(384) + SE(16) + Skip + Dropout(0.3)
-  - Head : GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+Architecture (4 blocs) :
+  - Bloc 1 : Conv2D(32) + SE(4) + Skip + Dropout(0.25)
+  - Bloc 2 : SeparableConv2D(64) + SE(8) + Skip + Dropout(0.25)
+  - Bloc 3 : SeparableConv2D(128) + SE(8) + Skip + Dropout(0.3)
+  - Bloc 4 : SeparableConv2D(256) + SE(16) + Skip + Dropout(0.3)
+  - Head : GAP → Dense(256) → Dropout(0.5) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
-Techniques combinées :
+Techniques :
   - ResNet : Skip connections
   - SE-Net : Channel attention
   - Separable Conv : Réduction paramètres
-  - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
   - Binary Crossentropy + Class Weights
-  - Data augmentation renforcée
+  - Data augmentation
 """)
 
 # %% [code]
-"""## 6. Phase 1 : Entraînement principal (lr=1e-3)"""
+"""## 5. Entraînement"""
 
-early_stop1 = EarlyStopping(
+early_stop = EarlyStopping(
     monitor='val_accuracy',
     mode='max',
     patience=7,
     restore_best_weights=True,
-    start_from_epoch=15,
     verbose=1
 )
 
-reduce_lr1 = ReduceLROnPlateau(
+reduce_lr = ReduceLROnPlateau(
     monitor='val_loss',
     factor=0.5,
     patience=3,
@@ -420,70 +308,25 @@ reduce_lr1 = ReduceLROnPlateau(
 )
 
 print("\n" + "=" * 60)
-print("PHASE 1 : ENTRAÎNEMENT PRINCIPAL (lr=1e-3)")
+print("ENTRAÎNEMENT")
 print("=" * 60)
-print("Configuration :")
-print("  - Architecture : 4 blocs (48→96→192→384) + SE + Skip + L2")
 print("  - Loss : Binary Crossentropy + Class Weights")
 print("  - Optimizer : Adam (lr=0.001)")
-print("  - Epochs : 40 (min 20)")
+print("  - Epochs : 50 (early stop patience=7)")
 
-history1 = model.fit(
+history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
-    epochs=30,
+    epochs=50,
     batch_size=32,
     class_weight=class_weight_dict,
-    callbacks=[early_stop1, reduce_lr1]
+    callbacks=[early_stop, reduce_lr]
 )
 
-print(f"\nPhase 1 terminée - Meilleure accuracy val : {max(history1.history['val_accuracy'])*100:.2f}%")
+print(f"\nMeilleure accuracy val : {max(history.history['val_accuracy'])*100:.2f}%")
 
 # %% [code]
-"""## 7. Phase 2 : Fine-tuning (lr=1e-4)"""
-
-model.compile(
-    optimizer=Adam(learning_rate=1e-4),
-    loss='binary_crossentropy',
-    metrics=['accuracy']
-)
-
-early_stop2 = EarlyStopping(
-    monitor='val_accuracy',
-    mode='max',
-    patience=7,
-    restore_best_weights=True,
-    start_from_epoch=10,
-    verbose=1
-)
-
-reduce_lr2 = ReduceLROnPlateau(
-    monitor='val_loss',
-    factor=0.5,
-    patience=3,
-    min_lr=1e-7,
-    verbose=1
-)
-
-print("\n" + "=" * 60)
-print("PHASE 2 : FINE-TUNING (lr=1e-4)")
-print("=" * 60)
-print("  - Optimizer : Adam (lr=0.0001)")
-print("  - Epochs : 30 (min 10)")
-
-history2 = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=20,
-    batch_size=32,
-    class_weight=class_weight_dict,
-    callbacks=[early_stop2, reduce_lr2]
-)
-
-print(f"\nPhase 2 terminée - Meilleure accuracy val : {max(history2.history['val_accuracy'])*100:.2f}%")
-
-# %% [code]
-"""## 8. Évaluation du modèle"""
+"""## 6. Évaluation du modèle"""
 
 y_pred_proba = model.predict(X_test).flatten()
 y_pred = (y_pred_proba > 0.5).astype(int)
@@ -500,28 +343,20 @@ print("\nRapport de classification :")
 print(classification_report(y_test, y_pred, target_names=gender_labels))
 
 # %% [code]
-"""## 9. Graphiques d'entraînement (2 phases combinées)"""
-
-all_loss = history1.history['loss'] + history2.history['loss']
-all_val_loss = history1.history['val_loss'] + history2.history['val_loss']
-all_acc = history1.history['accuracy'] + history2.history['accuracy']
-all_val_acc = history1.history['val_accuracy'] + history2.history['val_accuracy']
-phase1_epochs = len(history1.history['loss'])
+"""## 7. Graphiques d'entraînement"""
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-axes[0].plot(all_loss, label='Train', linewidth=2, marker='o', markersize=3)
-axes[0].plot(all_val_loss, label='Validation', linewidth=2, marker='s', markersize=3)
-axes[0].axvline(x=phase1_epochs - 0.5, color='red', linestyle='--', alpha=0.7, label='Début phase 2')
+axes[0].plot(history.history['loss'], label='Train', linewidth=2, marker='o', markersize=3)
+axes[0].plot(history.history['val_loss'], label='Validation', linewidth=2, marker='s', markersize=3)
 axes[0].set_title('Loss durant l\'entraînement', fontsize=12)
 axes[0].set_xlabel('Epoch')
 axes[0].set_ylabel('Loss')
 axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
-axes[1].plot(all_acc, label='Train', linewidth=2, marker='o', markersize=3)
-axes[1].plot(all_val_acc, label='Validation', linewidth=2, marker='s', markersize=3)
-axes[1].axvline(x=phase1_epochs - 0.5, color='red', linestyle='--', alpha=0.7, label='Début phase 2')
+axes[1].plot(history.history['accuracy'], label='Train', linewidth=2, marker='o', markersize=3)
+axes[1].plot(history.history['val_accuracy'], label='Validation', linewidth=2, marker='s', markersize=3)
 axes[1].set_title('Accuracy durant l\'entraînement', fontsize=12)
 axes[1].set_xlabel('Epoch')
 axes[1].set_ylabel('Accuracy')
@@ -533,17 +368,16 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_PATH, 'training_curves_genre_optimal.png'), dpi=150, bbox_inches='tight')
 plt.show()
 
+total_epochs = len(history.history['loss'])
 print("=" * 50)
 print("RÉSUMÉ DE L'ENTRAÎNEMENT")
 print("=" * 50)
-print(f"Phase 1 : {len(history1.history['loss'])} epochs")
-print(f"Phase 2 : {len(history2.history['loss'])} epochs")
-print(f"Total   : {len(all_loss)} epochs")
-print(f"\nMeilleure accuracy validation : {max(all_val_acc)*100:.2f}%")
-print(f"Meilleure loss validation : {min(all_val_loss):.4f}")
+print(f"Epochs : {total_epochs}")
+print(f"Meilleure accuracy validation : {max(history.history['val_accuracy'])*100:.2f}%")
+print(f"Meilleure loss validation : {min(history.history['val_loss']):.4f}")
 
 # %% [code]
-"""## 10. Matrice de confusion"""
+"""## 8. Matrice de confusion"""
 
 cm_matrix = confusion_matrix(y_test, y_pred)
 
@@ -564,7 +398,7 @@ plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_genre_optimal.png'), dpi
 plt.show()
 
 # %% [code]
-"""## 11. Performances par classe"""
+"""## 9. Performances par classe"""
 
 precision, recall, f1, support = precision_recall_fscore_support(y_test, y_pred)
 
@@ -598,14 +432,11 @@ plt.savefig(os.path.join(OUTPUT_PATH, 'metrics_per_class_genre_optimal.png'), dp
 plt.show()
 
 # %% [code]
-"""## 12. Grad-CAM : Visualiser comment le modèle réfléchit"""
+"""## 10. Grad-CAM : Visualiser comment le modèle réfléchit"""
 
 
 def make_gradcam_heatmap(img_array, model, pred_index=None):
-    """
-    Génère une heatmap Grad-CAM pour un CNN custom (architecture plate).
-    """
-    # Trouver la dernière couche convolutionnelle
+    """Génère une heatmap Grad-CAM pour un CNN custom."""
     last_conv_layer_name = None
     for layer in model.layers[::-1]:
         if isinstance(layer, (tf.keras.layers.Conv2D, tf.keras.layers.SeparableConv2D)):
@@ -615,7 +446,6 @@ def make_gradcam_heatmap(img_array, model, pred_index=None):
     if last_conv_layer_name is None:
         return np.ones((4, 4), dtype=np.float32) * 0.5
 
-    # Sous-modèle : entrée → [dernière conv, sortie finale]
     grad_model = tf.keras.Model(
         inputs=model.input,
         outputs=[model.get_layer(last_conv_layer_name).output, model.output]
@@ -624,7 +454,6 @@ def make_gradcam_heatmap(img_array, model, pred_index=None):
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array, training=False)
         tape.watch(conv_outputs)
-        # Pour binaire : gradient de la sortie sigmoid
         class_channel = predictions[:, 0]
 
     grads = tape.gradient(class_channel, conv_outputs)
@@ -633,7 +462,6 @@ def make_gradcam_heatmap(img_array, model, pred_index=None):
         return np.ones((4, 4), dtype=np.float32) * 0.5
 
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
     conv_outputs = conv_outputs[0]
     heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
@@ -654,7 +482,6 @@ def display_gradcam(img, heatmap, alpha=0.4):
     return superimposed
 
 
-# Générer les Grad-CAM sur 8 images du test set
 print("Génération des Grad-CAM heatmaps...")
 fig, axes = plt.subplots(4, 4, figsize=(16, 16))
 
@@ -695,9 +522,8 @@ plt.savefig(os.path.join(OUTPUT_PATH, 'gradcam_genre_optimal.png'), dpi=150, bbo
 plt.show()
 
 # %% [code]
-"""## 13. Distribution de confiance des prédictions"""
+"""## 11. Distribution de confiance des prédictions"""
 
-# Pour binaire : confiance = distance à 0.5
 y_pred_confidence = np.where(y_pred == 1, y_pred_proba, 1 - y_pred_proba)
 correct_mask = (y_pred == y_test)
 incorrect_mask = ~correct_mask
@@ -723,28 +549,19 @@ print(f"Confiance moyenne (prédictions correctes) : {y_pred_confidence[correct_
 print(f"Confiance moyenne (prédictions incorrectes) : {y_pred_confidence[incorrect_mask].mean()*100:.1f}%")
 
 # %% [code]
-"""## 14. Sauvegarde du modèle"""
+"""## 12. Sauvegarde du modèle"""
 
 model.save(os.path.join(OUTPUT_PATH, 'gender_model_optimal.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/gender_model_optimal.keras")
 
 # %% [code]
-"""## 15. Export TensorFlow Lite
-
-Le modèle contient des couches d'augmentation (RandomFlip, RandomRotation, etc.)
-qui ne sont pas supportées par TFLite. On crée un modèle d'inférence propre
-sans augmentation, on réutilise les poids, puis on exporte.
-"""
+"""## 13. Export TensorFlow Lite"""
 
 print("\n" + "=" * 60)
 print("EXPORT TENSORFLOW LITE")
 print("=" * 60)
 
-# Les couches d'augmentation (RandomFlip, RandomRotation, etc.) sont
-# automatiquement désactivées en mode inférence (training=False).
-# On peut donc exporter le modèle directement sans reconstruire le graphe.
-
-# Export TFLite
+# Les couches d'augmentation sont automatiquement désactivées en inférence.
 tflite_path = os.path.join(OUTPUT_PATH, 'gender_optimal.tflite')
 
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -778,35 +595,32 @@ print(f"  Test prediction : {test_output.flatten()}")
 print("  TFLite OK !")
 
 # %% [code]
-"""## 16. Résumé final"""
+"""## 14. Résumé final"""
 
 print("=" * 60)
 print("RÉSUMÉ FINAL - MODÈLE 5 : ARCHITECTURE OPTIMALE GENRE")
 print("=" * 60)
 print(f"""
 Architecture :
-  - Type : CNN custom from scratch (pas de transfer learning)
-  - Bloc 1 : Conv2D(48) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
-  - Bloc 2 : SeparableConv2D(96) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
-  - Bloc 3 : SeparableConv2D(192) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
-  - Bloc 4 : SeparableConv2D(384) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
-  - Head : GAP → Dense(512) → Dropout(0.5) → Dense(128) → Dropout(0.3) → Dense(1, sigmoid)
+  - Type : CNN custom from scratch
+  - Bloc 1 : Conv2D(32) → BN → ReLU → SE(4) + Skip → MaxPool → Dropout(0.25)
+  - Bloc 2 : SeparableConv2D(64) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.25)
+  - Bloc 3 : SeparableConv2D(128) → BN → ReLU → SE(8) + Skip → MaxPool → Dropout(0.3)
+  - Bloc 4 : SeparableConv2D(256) → BN → ReLU → SE(16) + Skip → MaxPool → Dropout(0.3)
+  - Head : GAP → Dense(256) → Dropout(0.5) → Dense(1, sigmoid)
   - Input : RGB {IMG_SIZE}x{IMG_SIZE}
   - Paramètres totaux : {model.count_params():,}
 
-Techniques combinées :
+Techniques :
   - ResNet : Skip connections autour de chaque bloc
   - SE-Net : Channel attention (ratios 4, 8, 8, 16)
   - Separable Conv : Blocs 2, 3, 4
-  - Dropout progressif : 0.25 → 0.25 → 0.3 → 0.3
   - Binary Crossentropy + Class Weights
-  - Data augmentation renforcée : Flip, Rotation, Zoom, Translation, Brightness, Contrast
-  - Architecture élargie : 4 blocs (48 → 96 → 192 → 384 filtres)
+  - Data augmentation : Flip, Rotation, Zoom, Brightness, Contrast
 
-Entraînement en 2 phases :
-  - Phase 1 : lr=0.001, {phase1_epochs} epochs
-  - Phase 2 : lr=0.0001, {len(history2.history['loss'])} epochs
-  - Total : {len(all_loss)} epochs
+Entraînement :
+  - Epochs : {total_epochs}
+  - Optimizer : Adam (lr=1e-3 avec ReduceLROnPlateau)
 
 Résultats :
   - Accuracy globale : {accuracy*100:.2f}%

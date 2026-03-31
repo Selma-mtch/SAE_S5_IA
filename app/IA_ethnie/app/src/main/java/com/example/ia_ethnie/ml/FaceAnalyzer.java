@@ -72,54 +72,57 @@ public class FaceAnalyzer {
     }
 
     private void loadModels(Context context) {
-        try {
-            Interpreter.Options options = new Interpreter.Options();
+        Interpreter.Options options = new Interpreter.Options();
 
+        try {
             if (useGpu) {
                 gpuDelegate = new GpuDelegate();
                 options.addDelegate(gpuDelegate);
             }
-            options.setNumThreads(4);
-
-            // Charger les modèles depuis assets
-            // Les fichiers .tflite doivent être placés dans app/src/main/assets/
-            try {
-                multiTaskInterpreter = new Interpreter(
-                        loadModelFile(context, "model_multitask.tflite"), options);
-            } catch (IOException e) {
-                // Modèle multi-tâche non disponible
-            }
-
-            try {
-                ethnicityInterpreter = new Interpreter(
-                        loadModelFile(context, "model_ethnicity.tflite"), options);
-            } catch (IOException e) {
-                // Modèle ethnicité non disponible
-            }
-
-            try {
-                ageInterpreter = new Interpreter(
-                        loadModelFile(context, "model_age.tflite"), options);
-            } catch (IOException e) {
-                // Modèle âge non disponible
-            }
-
-            try {
-                genderInterpreter = new Interpreter(
-                        loadModelFile(context, "model_gender.tflite"), options);
-            } catch (IOException e) {
-                // Modèle genre non disponible
-            }
-
-            try {
-                transferInterpreter = new Interpreter(
-                        loadModelFile(context, "model_transfer.tflite"), options);
-            } catch (IOException e) {
-                // Modèle transfer non disponible
-            }
-
         } catch (Exception e) {
-            e.printStackTrace();
+            android.util.Log.w("FaceAnalyzer", "GPU delegate non disponible, fallback CPU", e);
+        }
+        options.setNumThreads(4);
+
+        // Charger les modèles depuis assets (chaque modèle indépendant)
+        try {
+            multiTaskInterpreter = new Interpreter(
+                    loadModelFile(context, "model_multitask.tflite"), options);
+            android.util.Log.i("FaceAnalyzer", "model_multitask.tflite chargé");
+        } catch (Exception e) {
+            android.util.Log.w("FaceAnalyzer", "model_multitask.tflite non disponible: " + e.getMessage());
+        }
+
+        try {
+            ethnicityInterpreter = new Interpreter(
+                    loadModelFile(context, "model_ethnicity.tflite"), options);
+            android.util.Log.i("FaceAnalyzer", "model_ethnicity.tflite chargé");
+        } catch (Exception e) {
+            android.util.Log.w("FaceAnalyzer", "model_ethnicity.tflite non disponible: " + e.getMessage());
+        }
+
+        try {
+            ageInterpreter = new Interpreter(
+                    loadModelFile(context, "model_age.tflite"), options);
+            android.util.Log.i("FaceAnalyzer", "model_age.tflite chargé");
+        } catch (Exception e) {
+            android.util.Log.w("FaceAnalyzer", "model_age.tflite non disponible: " + e.getMessage());
+        }
+
+        try {
+            genderInterpreter = new Interpreter(
+                    loadModelFile(context, "model_gender.tflite"), options);
+            android.util.Log.i("FaceAnalyzer", "model_gender.tflite chargé");
+        } catch (Exception e) {
+            android.util.Log.w("FaceAnalyzer", "model_gender.tflite non disponible: " + e.getMessage());
+        }
+
+        try {
+            transferInterpreter = new Interpreter(
+                    loadModelFile(context, "model_transfer.tflite"), options);
+            android.util.Log.i("FaceAnalyzer", "model_transfer.tflite chargé");
+        } catch (Exception e) {
+            android.util.Log.e("FaceAnalyzer", "model_transfer.tflite ERREUR: " + e.getMessage(), e);
         }
     }
 
@@ -317,19 +320,39 @@ public class FaceAnalyzer {
 
     private PredictionResult analyzeWithTransferModel(ByteBuffer inputBuffer) {
         if (transferInterpreter == null) {
+            android.util.Log.e("FaceAnalyzer", "Transfer interpreter is null!");
             return createDemoResult();
         }
 
         int outputCount = transferInterpreter.getOutputTensorCount();
+        android.util.Log.d("FaceAnalyzer", "Transfer model output count: " + outputCount);
 
         int ageIdx = -1, genderIdx = -1, ethIdx = -1;
 
-        // D'abord par nom de tenseur
+        // D'abord par nom de tenseur (ex: "age", "gender", "ethnic"/"race")
         for (int i = 0; i < outputCount; i++) {
             String name = transferInterpreter.getOutputTensor(i).name().toLowerCase();
+            int[] shape = transferInterpreter.getOutputTensor(i).shape();
+            android.util.Log.d("FaceAnalyzer", "Output " + i + ": name='" + name + "', shape=" + java.util.Arrays.toString(shape));
             if (name.contains("age")) ageIdx = i;
             else if (name.contains("gender")) genderIdx = i;
             else if (name.contains("ethnic") || name.contains("race")) ethIdx = i;
+        }
+
+        // Fallback par suffixe du nom TFLite (ex: "StatefulPartitionedCall:0" → :0=age, :1=gender, :2=eth)
+        if (ageIdx == -1 || genderIdx == -1 || ethIdx == -1) {
+            for (int i = 0; i < outputCount; i++) {
+                String name = transferInterpreter.getOutputTensor(i).name();
+                int colonIdx = name.lastIndexOf(':');
+                if (colonIdx >= 0) {
+                    try {
+                        int suffix = Integer.parseInt(name.substring(colonIdx + 1));
+                        if (suffix == 0 && ageIdx == -1) ageIdx = i;
+                        else if (suffix == 1 && genderIdx == -1) genderIdx = i;
+                        else if (suffix == 2 && ethIdx == -1) ethIdx = i;
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
         }
 
         // Fallback par shape: ethnie=[1,5], genre=[1,2], age=[1,1]
@@ -369,6 +392,11 @@ public class FaceAnalyzer {
         outputs.put(ethIdx, ethnicityOutput);
 
         transferInterpreter.runForMultipleInputsOutputs(inputs, outputs);
+
+        android.util.Log.d("FaceAnalyzer", "Transfer raw outputs - age=" + ageOutput[0][0]
+                + " gender=" + java.util.Arrays.toString(genderOutput[0])
+                + " eth=" + java.util.Arrays.toString(ethnicityOutput[0]));
+        android.util.Log.d("FaceAnalyzer", "Index mapping - ageIdx=" + ageIdx + " genderIdx=" + genderIdx + " ethIdx=" + ethIdx);
 
         // Age
         int predictedAge = Math.round(ageOutput[0][0]);
