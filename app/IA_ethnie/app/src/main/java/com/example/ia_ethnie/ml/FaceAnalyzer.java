@@ -27,6 +27,8 @@ public class FaceAnalyzer {
     private GpuDelegate gpuDelegate;
     private boolean useGpu = false;
     private ModelType currentModelType = ModelType.MULTI_TASK;
+    private FaceDetectorHelper faceDetectorHelper;
+    private volatile boolean closed = false;
 
     // Buffers réutilisables pour éviter les allocations à chaque frame
     private ByteBuffer grayscaleBuffer;
@@ -49,6 +51,8 @@ public class FaceAnalyzer {
         public float genderConfidence;
         public float ethnicityConfidence;
         public ModelType modelType;
+        public Bitmap croppedFace;
+        public android.graphics.Rect faceBounds;
 
         public PredictionResult(int age, String gender, String ethnicity,
                                 float ageConfidence, float genderConfidence,
@@ -64,10 +68,15 @@ public class FaceAnalyzer {
     }
 
     public FaceAnalyzer(Context context) {
+        this(context, false);
+    }
+
+    public FaceAnalyzer(Context context, boolean fastFaceDetection) {
         grayscaleBuffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 4);
         grayscaleBuffer.order(ByteOrder.nativeOrder());
         rgbBuffer = ByteBuffer.allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * 4);
         rgbBuffer.order(ByteOrder.nativeOrder());
+        faceDetectorHelper = new FaceDetectorHelper(fastFaceDetection);
         loadModels(context);
     }
 
@@ -148,7 +157,12 @@ public class FaceAnalyzer {
     }
 
     public synchronized PredictionResult analyze(Bitmap bitmap) {
-        Bitmap resizedBitmap = Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true);
+        if (closed) return createDemoResult();
+
+        // Detecter et cropper le visage avant l'inference
+        FaceDetectorHelper.DetectionResult detection = faceDetectorHelper.detectAndCropWithBounds(bitmap);
+        Bitmap faceBitmap = detection.croppedFace;
+        Bitmap resizedBitmap = Bitmap.createScaledBitmap(faceBitmap, INPUT_SIZE, INPUT_SIZE, true);
 
         PredictionResult result;
         switch (currentModelType) {
@@ -164,7 +178,11 @@ public class FaceAnalyzer {
                 break;
         }
 
-        if (resizedBitmap != bitmap) {
+        // Stocker le crop et les bounds dans le resultat
+        result.croppedFace = faceBitmap;
+        result.faceBounds = detection.faceBounds;
+
+        if (resizedBitmap != faceBitmap) {
             resizedBitmap.recycle();
         }
         return result;
@@ -515,13 +533,15 @@ public class FaceAnalyzer {
         return maxIndex;
     }
 
-    public void close() {
+    public synchronized void close() {
+        closed = true;
         if (ethnicityInterpreter != null) ethnicityInterpreter.close();
         if (ageInterpreter != null) ageInterpreter.close();
         if (genderInterpreter != null) genderInterpreter.close();
         if (multiTaskInterpreter != null) multiTaskInterpreter.close();
         if (transferInterpreter != null) transferInterpreter.close();
         if (gpuDelegate != null) gpuDelegate.close();
+        if (faceDetectorHelper != null) faceDetectorHelper.close();
     }
 
     public String getModelInfo() {

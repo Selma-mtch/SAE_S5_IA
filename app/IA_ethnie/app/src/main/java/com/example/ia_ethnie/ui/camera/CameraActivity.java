@@ -56,7 +56,7 @@ public class CameraActivity extends AppCompatActivity {
         cameraExecutor = Executors.newSingleThreadExecutor();
 
         if (isRealTimeMode) {
-            faceAnalyzer = new FaceAnalyzer(this);
+            faceAnalyzer = new FaceAnalyzer(this, true); // fast face detection pour le live
             binding.realtimeOverlay.setVisibility(View.VISIBLE);
             binding.btnCapture.setVisibility(View.GONE);
         }
@@ -155,12 +155,23 @@ public class CameraActivity extends AppCompatActivity {
         Bitmap bitmap = imageProxyToBitmap(image);
         if (bitmap != null) {
             FaceAnalyzer.PredictionResult result = faceAnalyzer.analyze(bitmap);
+            int bmpW = bitmap.getWidth();
+            int bmpH = bitmap.getHeight();
             bitmap.recycle();
 
             runOnUiThread(() -> {
                 binding.tvRealtimeAge.setText(String.valueOf(result.age));
                 binding.tvRealtimeGender.setText(result.gender);
                 binding.tvRealtimeEthnicity.setText(result.ethnicity);
+
+                // Dessiner le rectangle autour du visage
+                if (result.faceBounds != null) {
+                    String label = result.age + " ans | " + result.gender + " | " + result.ethnicity;
+                    binding.faceOverlay.setFaceBounds(result.faceBounds, bmpW, bmpH,
+                            cameraFacing == CameraSelector.LENS_FACING_FRONT, label);
+                } else {
+                    binding.faceOverlay.clearBounds();
+                }
             });
         }
         image.close();

@@ -11,6 +11,12 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Face detection overlay (rectangle autour du visage) -->
+    <com.example.ia_ethnie.ui.camera.FaceOverlayView
+        android:id="@+id/faceOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <!-- Top Bar - minimal -->
     <LinearLayout
         android:id="@+id/topBar"

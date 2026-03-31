@@ -58,6 +58,9 @@ dependencies {
     }
     implementation(libs.tensorflow.lite.gpu)
 
+    // ML Kit Face Detection
+    implementation(libs.mlkit.face.detection)
+
     // CameraX
     implementation(libs.camerax.core)
     implementation(libs.camerax.camera2)
