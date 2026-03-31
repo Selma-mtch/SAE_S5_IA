@@ -168,22 +168,46 @@ public class CameraActivity extends AppCompatActivity {
 
     private Bitmap imageProxyToBitmap(ImageProxy image) {
         try {
+            int width = image.getWidth();
+            int height = image.getHeight();
+
             ImageProxy.PlaneProxy[] planes = image.getPlanes();
-            ByteBuffer yBuffer = planes[0].getBuffer();
-            ByteBuffer uBuffer = planes[1].getBuffer();
-            ByteBuffer vBuffer = planes[2].getBuffer();
+            ImageProxy.PlaneProxy yPlane = planes[0];
+            ImageProxy.PlaneProxy uPlane = planes[1];
+            ImageProxy.PlaneProxy vPlane = planes[2];
 
-            int ySize = yBuffer.remaining();
-            int uSize = uBuffer.remaining();
-            int vSize = vBuffer.remaining();
+            ByteBuffer yBuffer = yPlane.getBuffer();
+            ByteBuffer uBuffer = uPlane.getBuffer();
+            ByteBuffer vBuffer = vPlane.getBuffer();
 
-            byte[] nv21 = new byte[ySize + uSize + vSize];
-            yBuffer.get(nv21, 0, ySize);
-            vBuffer.get(nv21, ySize, vSize);
-            uBuffer.get(nv21, ySize + vSize, uSize);
+            int yRowStride = yPlane.getRowStride();
+            int uvRowStride = uPlane.getRowStride();
+            int uvPixelStride = uPlane.getPixelStride();
 
-            YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21,
-                    image.getWidth(), image.getHeight(), null);
+            // NV21 : Y plein + VU entrelacé
+            byte[] nv21 = new byte[width * height + width * ((height + 1) / 2)];
+
+            // Copier Y ligne par ligne (gère le padding/stride)
+            int pos = 0;
+            for (int row = 0; row < height; row++) {
+                yBuffer.position(row * yRowStride);
+                yBuffer.get(nv21, pos, width);
+                pos += width;
+            }
+
+            // Copier VU entrelacé (gère le pixel stride et le row stride)
+            int uvHeight = (height + 1) / 2;
+            int uvWidth = (width + 1) / 2;
+            for (int row = 0; row < uvHeight; row++) {
+                for (int col = 0; col < uvWidth; col++) {
+                    int vIdx = row * uvRowStride + col * uvPixelStride;
+                    int uIdx = row * uvRowStride + col * uvPixelStride;
+                    nv21[pos++] = vBuffer.get(vIdx);  // V first (NV21)
+                    nv21[pos++] = uBuffer.get(uIdx);  // then U
+                }
+            }
+
+            YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, width, height, null);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             yuvImage.compressToJpeg(new Rect(0, 0, image.getWidth(), image.getHeight()), 75, out);

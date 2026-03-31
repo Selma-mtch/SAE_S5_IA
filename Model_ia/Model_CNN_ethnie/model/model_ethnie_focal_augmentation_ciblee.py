@@ -495,7 +495,97 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_PATH, 'confusion_matrix_focal_aug.png'), dpi=150)
 plt.show()
 
-"""## 11. Sauvegarde du modèle"""
+"""## 11. Grad-CAM Heatmaps"""
+
+import matplotlib.cm as cm
+
+
+def make_gradcam_heatmap(img_array, model, pred_index=None):
+    """Génère une heatmap Grad-CAM sur la dernière couche convolutionnelle."""
+    last_conv_layer_name = None
+    for layer in model.layers[::-1]:
+        if isinstance(layer, tf.keras.layers.Conv2D):
+            last_conv_layer_name = layer.name
+            break
+
+    if last_conv_layer_name is None:
+        return np.ones((4, 4), dtype=np.float32) * 0.5
+
+    grad_model = tf.keras.Model(
+        inputs=model.input,
+        outputs=[model.get_layer(last_conv_layer_name).output, model.output]
+    )
+
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(img_array, training=False)
+        tape.watch(conv_outputs)
+        if pred_index is None:
+            pred_index = tf.argmax(predictions[0])
+        class_channel = predictions[:, pred_index]
+
+    grads = tape.gradient(class_channel, conv_outputs)
+    if grads is None:
+        return np.ones((4, 4), dtype=np.float32) * 0.5
+
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    conv_outputs = conv_outputs[0]
+    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
+    heatmap = tf.squeeze(heatmap)
+    heatmap = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
+    return heatmap.numpy()
+
+
+def display_gradcam(img, heatmap, alpha=0.4):
+    """Superpose la heatmap Grad-CAM sur l'image."""
+    heatmap_resized = tf.image.resize(
+        heatmap[..., np.newaxis], (128, 128)
+    ).numpy().squeeze()
+    heatmap_colored = cm.jet(heatmap_resized)[:, :, :3]
+    img_rgb = np.stack([img.squeeze()] * 3, axis=-1) if img.ndim == 3 and img.shape[-1] == 1 else img
+    superimposed = heatmap_colored * alpha + img_rgb * (1 - alpha)
+    return np.clip(superimposed, 0, 1)
+
+
+print("Génération des Grad-CAM heatmaps...")
+fig, axes = plt.subplots(4, 4, figsize=(16, 16))
+
+np.random.seed(42)
+indices = np.random.choice(len(X_test), 8, replace=False)
+
+for i, idx in enumerate(indices):
+    img = X_test[idx]
+    img_array = np.expand_dims(img, axis=0)
+
+    pred_proba = model.predict(img_array, verbose=0)
+    pred_class = np.argmax(pred_proba)
+    true_class = int(y_test[idx])
+    confidence = pred_proba[0][pred_class] * 100
+
+    heatmap = make_gradcam_heatmap(img_array, model, pred_class)
+    superimposed = display_gradcam(img, heatmap)
+
+    color = 'green' if pred_class == true_class else 'red'
+    img_display = np.stack([img.squeeze()] * 3, axis=-1) if img.ndim == 3 and img.shape[-1] == 1 else img
+
+    row = i // 2
+    col = (i % 2) * 2
+    axes[row, col].imshow(img_display)
+    axes[row, col].set_title(
+        f"Réel: {eth_labels[true_class]}\nPrédit: {eth_labels[pred_class]} ({confidence:.1f}%)",
+        fontsize=10, color=color
+    )
+    axes[row, col].axis('off')
+
+    axes[row, col + 1].imshow(superimposed)
+    axes[row, col + 1].set_title('Grad-CAM', fontsize=10)
+    axes[row, col + 1].axis('off')
+
+plt.suptitle('Grad-CAM - Focal Loss + Augmentation Ciblée\n(Zones chaudes = où le modèle regarde)', fontsize=14, y=1.02)
+plt.tight_layout()
+plt.savefig(os.path.join(OUTPUT_PATH, 'gradcam_focal_aug.png'), dpi=150, bbox_inches='tight')
+plt.show()
+
+"""## 12. Sauvegarde du modèle"""
 
 model.save(os.path.join(OUTPUT_PATH, 'ethnicity_model_focal_aug.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/ethnicity_model_focal_aug.keras")

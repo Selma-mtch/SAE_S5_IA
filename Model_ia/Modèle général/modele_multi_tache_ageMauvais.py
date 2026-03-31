@@ -321,14 +321,66 @@ model.save(os.path.join(OUTPUT_PATH, 'model_multitache_ageMauvais.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/model_multitache_ageMauvais.keras")
 
 # Export TFLite - modèle d'inférence SANS data augmentation
-inference_input = layers.Input(shape=(128, 128, 1))
-x = inference_input
-for layer in model.layers:
-    if layer.name == 'data_augmentation' or isinstance(layer, layers.InputLayer):
-        continue
-    x = layer(x)
+# On reconstruit le graphe en traçant la topologie du modèle entraîné
 
-inference_model = models.Model(inputs=inference_input, outputs=x)
+print("\nCouches du modèle entraîné :")
+for i, layer in enumerate(model.layers):
+    print(f"  {i}: {layer.name} ({layer.__class__.__name__})")
+
+# Utiliser la config du modèle pour reconstruire le graphe sans augmentation
+config = model.get_config()
+trained = {layer.name: layer for layer in model.layers}
+
+inference_input = layers.Input(shape=(128, 128, 1), name='inference_input')
+tensor_map = {}
+
+# Mapper les noms d'entrée
+for input_layer_info in config['input_layers']:
+    tensor_map[input_layer_info[0]] = inference_input
+
+# Mapper data_augmentation → skip (pointe directement vers l'input)
+tensor_map['data_augmentation'] = inference_input
+
+# Parcourir les couches dans l'ordre topologique
+for layer_config in config['layers']:
+    layer_name = layer_config['name']
+
+    if layer_name in tensor_map:
+        continue
+
+    # Trouver les tenseurs d'entrée de cette couche
+    inbound = layer_config['inbound_nodes']
+    if not inbound:
+        continue
+
+    input_tensors = []
+    for node_info in inbound[0]:
+        if isinstance(node_info, dict):
+            # Keras 3 format
+            args = node_info.get('args', [])
+            if args and isinstance(args[0], dict):
+                input_name = args[0].get('config', {}).get('keras_history', [None])[0]
+            else:
+                input_name = None
+        elif isinstance(node_info, (list, tuple)):
+            input_name = node_info[0]
+        else:
+            input_name = None
+
+        if input_name and input_name in tensor_map:
+            input_tensors.append(tensor_map[input_name])
+
+    if not input_tensors:
+        continue
+
+    inp = input_tensors[0] if len(input_tensors) == 1 else input_tensors
+    tensor_map[layer_name] = trained[layer_name](inp)
+
+# Récupérer les sorties
+output_names = [out_info[0] for out_info in config['output_layers']]
+outputs = [tensor_map[name] for name in output_names]
+
+inference_model = models.Model(inputs=inference_input, outputs=outputs, name='inference_model')
 
 # Vérifier que les prédictions sont identiques
 test_pred_orig = model.predict(X_test[:5], verbose=0)
