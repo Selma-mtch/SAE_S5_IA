@@ -118,12 +118,13 @@
 
                 <TextView
                     android:id="@+id/tvRealtimeGender"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="--"
                     android:textColor="@color/white"
-                    android:textSize="28sp"
+                    android:textSize="18sp"
+                    android:maxLines="1"
                     android:textStyle="bold"
                     android:fontFamily="serif" />
             </LinearLayout>
@@ -145,12 +146,13 @@
 
                 <TextView
                     android:id="@+id/tvRealtimeEthnicity"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="--"
                     android:textColor="@color/white"
-                    android:textSize="28sp"
+                    android:textSize="18sp"
+                    android:maxLines="1"
                     android:textStyle="bold"
                     android:fontFamily="serif" />
             </LinearLayout>
