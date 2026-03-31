@@ -217,6 +217,62 @@ model.compile(
 
 model.summary()
 
+# --- 5b. Vérifications avant entraînement ---
+print("\n" + "=" * 50)
+print("VÉRIFICATIONS AVANT ENTRAÎNEMENT")
+print("=" * 50)
+
+errors = []
+
+# Vérif 1 : shapes des données
+if X_train.shape[1:] != (128, 128, 1):
+    errors.append(f"X_train shape incorrecte : {X_train.shape}, attendu (N, 128, 128, 1)")
+if X_train.min() < -0.01 or X_train.max() > 1.01:
+    errors.append(f"X_train hors range [0,1] : min={X_train.min():.4f}, max={X_train.max():.4f}")
+
+# Vérif 2 : âge brut (pas normalisé)
+if y_age_train.max() <= 1.0:
+    errors.append(f"y_age_train semble normalisé [0,1] (max={y_age_train.max():.2f}). Attendu : âge brut en années")
+if y_age_train.min() < 0:
+    errors.append(f"y_age_train contient des valeurs négatives : min={y_age_train.min():.2f}")
+
+# Vérif 3 : genre binaire
+unique_genders = np.unique(y_gender_train)
+if not np.array_equal(unique_genders, [0., 1.]):
+    errors.append(f"y_gender_train pas binaire [0,1] : valeurs uniques = {unique_genders}")
+
+# Vérif 4 : ethnicité one-hot
+if y_eth_train_cat.shape[1] != 5:
+    errors.append(f"y_eth_train_cat devrait avoir 5 classes, a {y_eth_train_cat.shape[1]}")
+
+# Vérif 5 : outputs du modèle
+output_names = [o.name for o in model.outputs]
+print(f"  Outputs du modèle : {output_names}")
+for o in model.outputs:
+    print(f"    {o.name} : shape={o.shape}")
+
+# Vérif 6 : test rapide forward pass
+try:
+    test_pred = model.predict(X_train[:2], verbose=0)
+    print(f"  Forward pass OK : age={test_pred[0][0]}, gender={test_pred[1][0]}, eth={test_pred[2][0]}")
+except Exception as e:
+    errors.append(f"Forward pass échoué : {e}")
+
+# Vérif 7 : loss weights vs loss magnitudes
+print(f"  Loss weights : age=0.05, gender=0.8, ethnicity=1.0")
+print(f"  Age range : [{y_age_train.min():.0f}, {y_age_train.max():.0f}] ans")
+print(f"  Huber delta=8.0 → erreurs > 8 ans pénalisées linéairement")
+
+if errors:
+    print("\n ERREURS DÉTECTÉES :")
+    for e in errors:
+        print(f"  - {e}")
+    raise ValueError("Vérifications échouées. Corrigez les erreurs ci-dessus avant d'entraîner.")
+else:
+    print("\n  Toutes les vérifications sont OK !")
+
+print("=" * 50)
+
 # --- 6. Entraînement ---
 
 early_stop = EarlyStopping(
@@ -321,75 +377,25 @@ model.save(os.path.join(OUTPUT_PATH, 'model_multitache_ageMauvais.keras'))
 print(f"Modèle sauvegardé : {OUTPUT_PATH}/model_multitache_ageMauvais.keras")
 
 # Export TFLite - modèle d'inférence SANS data augmentation
-# On reconstruit le graphe en traçant la topologie du modèle entraîné
+# On convertit directement le modèle entraîné.
+# Les couches RandomRotation/RandomZoom/RandomTranslation sont des no-ops
+# quand training=False (ce qui est le cas en inférence TFLite).
+# On vérifie quand même que c'est bien le cas.
 
-print("\nCouches du modèle entraîné :")
-for i, layer in enumerate(model.layers):
-    print(f"  {i}: {layer.name} ({layer.__class__.__name__})")
+print("\nVérification : data augmentation désactivée en inference...")
+test_input = X_test[:3]
+preds = []
+for _ in range(5):
+    p = model.predict(test_input, verbose=0)
+    preds.append(p[0][0][0])  # age du premier sample
 
-# Utiliser la config du modèle pour reconstruire le graphe sans augmentation
-config = model.get_config()
-trained = {layer.name: layer for layer in model.layers}
+if len(set([round(p, 4) for p in preds])) == 1:
+    print("  OK : prédictions identiques (augmentation inactive en inference)")
+else:
+    print(f"  ATTENTION : prédictions différentes entre appels : {preds}")
+    print("  L'augmentation est encore active ! Les prédictions TFLite seront instables.")
 
-inference_input = layers.Input(shape=(128, 128, 1), name='inference_input')
-tensor_map = {}
-
-# Mapper les noms d'entrée
-for input_layer_info in config['input_layers']:
-    tensor_map[input_layer_info[0]] = inference_input
-
-# Mapper data_augmentation → skip (pointe directement vers l'input)
-tensor_map['data_augmentation'] = inference_input
-
-# Parcourir les couches dans l'ordre topologique
-for layer_config in config['layers']:
-    layer_name = layer_config['name']
-
-    if layer_name in tensor_map:
-        continue
-
-    # Trouver les tenseurs d'entrée de cette couche
-    inbound = layer_config['inbound_nodes']
-    if not inbound:
-        continue
-
-    input_tensors = []
-    for node_info in inbound[0]:
-        if isinstance(node_info, dict):
-            # Keras 3 format
-            args = node_info.get('args', [])
-            if args and isinstance(args[0], dict):
-                input_name = args[0].get('config', {}).get('keras_history', [None])[0]
-            else:
-                input_name = None
-        elif isinstance(node_info, (list, tuple)):
-            input_name = node_info[0]
-        else:
-            input_name = None
-
-        if input_name and input_name in tensor_map:
-            input_tensors.append(tensor_map[input_name])
-
-    if not input_tensors:
-        continue
-
-    inp = input_tensors[0] if len(input_tensors) == 1 else input_tensors
-    tensor_map[layer_name] = trained[layer_name](inp)
-
-# Récupérer les sorties
-output_names = [out_info[0] for out_info in config['output_layers']]
-outputs = [tensor_map[name] for name in output_names]
-
-inference_model = models.Model(inputs=inference_input, outputs=outputs, name='inference_model')
-
-# Vérifier que les prédictions sont identiques
-test_pred_orig = model.predict(X_test[:5], verbose=0)
-test_pred_inf = inference_model.predict(X_test[:5], verbose=0)
-for i, name in enumerate(['age', 'gender', 'ethnicity']):
-    diff = np.max(np.abs(np.array(test_pred_orig[i]) - np.array(test_pred_inf[i])))
-    print(f"Vérification {name} : diff max = {diff:.8f}")
-
-converter = tf.lite.TFLiteConverter.from_keras_model(inference_model)
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 tflite_model = converter.convert()
 
@@ -399,4 +405,13 @@ with open(tflite_path, 'wb') as f:
 
 size_mb = os.path.getsize(tflite_path) / (1024 * 1024)
 print(f"TFLite sauvegardé : {tflite_path} ({size_mb:.1f} Mo)")
+
+# Vérification TFLite
+interpreter = tf.lite.Interpreter(model_path=tflite_path)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+print(f"  Input  : shape={input_details[0]['shape']}, dtype={input_details[0]['dtype']}")
+for i, od in enumerate(output_details):
+    print(f"  Output {i} : name={od['name']}, shape={od['shape']}, dtype={od['dtype']}")
 print("Conversion OK")

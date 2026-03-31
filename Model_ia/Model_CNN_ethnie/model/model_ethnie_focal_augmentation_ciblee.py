@@ -379,6 +379,19 @@ model = Sequential([
     Dense(5, activation='softmax')
 ])
 
+# Forcer le build complet du modèle Sequential (nécessaire en Keras 3 pour Grad-CAM)
+_ = model.predict(np.zeros((1, 128, 128, 1), dtype=np.float32), verbose=0)
+try:
+    _last_conv = [l for l in model.layers if isinstance(l, Conv2D)][-1]
+    _test_grad = tf.keras.Model(
+        inputs=model.inputs,
+        outputs=[_last_conv.output, model.output]
+    )
+    print(f"Vérification Grad-CAM : OK (couche: {_last_conv.name})")
+    del _test_grad
+except Exception as e:
+    print(f"ATTENTION : Grad-CAM ne fonctionnera pas : {e}")
+
 # Compiler avec Focal Loss (gamma=3.0 pour focus accru sur les cas difficiles)
 # Learning rate réduit à 0.0001 pour une convergence plus stable
 model.compile(
@@ -502,6 +515,10 @@ import matplotlib.cm as cm
 
 def make_gradcam_heatmap(img_array, model, pred_index=None):
     """Génère une heatmap Grad-CAM sur la dernière couche convolutionnelle."""
+    # Build le modèle si pas encore fait (nécessaire pour Sequential en Keras 3)
+    if not model.built:
+        model.predict(img_array[:1], verbose=0)
+
     last_conv_layer_name = None
     for layer in model.layers[::-1]:
         if isinstance(layer, tf.keras.layers.Conv2D):
@@ -511,10 +528,14 @@ def make_gradcam_heatmap(img_array, model, pred_index=None):
     if last_conv_layer_name is None:
         return np.ones((4, 4), dtype=np.float32) * 0.5
 
-    grad_model = tf.keras.Model(
-        inputs=model.input,
-        outputs=[model.get_layer(last_conv_layer_name).output, model.output]
-    )
+    try:
+        grad_model = tf.keras.Model(
+            inputs=model.inputs,
+            outputs=[model.get_layer(last_conv_layer_name).output, model.output]
+        )
+    except Exception as e:
+        print(f"Grad-CAM init error: {e}")
+        return np.ones((4, 4), dtype=np.float32) * 0.5
 
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array, training=False)
