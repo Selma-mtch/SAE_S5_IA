@@ -79,7 +79,12 @@ public class ResultActivity extends AppCompatActivity {
             currentResult = faceAnalyzer.analyze(bitmap);
 
             runOnUiThread(() -> {
-                binding.ivFace.setImageBitmap(bitmap);
+                // Afficher le visage croppe si detecte, sinon l'image originale
+                if (currentResult.croppedFace != null) {
+                    binding.ivFace.setImageBitmap(currentResult.croppedFace);
+                } else {
+                    binding.ivFace.setImageBitmap(bitmap);
+                }
                 displayResult(currentResult);
             });
         });
