@@ -276,7 +276,115 @@ if __name__ == "__main__":
     np.save(OUTPUT_DIR / "age_label_mean.npy",     np.array([age_mean]))
     np.save(OUTPUT_DIR / "age_label_std.npy",      np.array([age_std]))
 
-    print("\nPour predire un age sur une nouvelle image :")
-    print("  img_norm = (img.astype('float32') - train_img_mean) / train_img_std")
-    print("  age_norm = model.predict(img_norm[np.newaxis, ...])")
-    print("  age_ans  = float(age_norm) * age_std + age_mean")
+    # 9. Graphiques
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 9a. Courbes d'entrainement (MAE normalise)
+    axes[0, 0].plot(history.history['mae'], label='Train', linewidth=2)
+    axes[0, 0].plot(history.history['val_mae'], label='Validation', linewidth=2)
+    axes[0, 0].set_title('MAE durant l\'entrainement')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('MAE (normalise)')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+
+    # 9b. Loss
+    axes[0, 1].plot(history.history['loss'], label='Train', linewidth=2)
+    axes[0, 1].plot(history.history['val_loss'], label='Validation', linewidth=2)
+    axes[0, 1].set_title('Loss (MSE) durant l\'entrainement')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Loss')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # 9c. Age reel vs predit
+    axes[1, 0].scatter(y_test_years, y_pred_years, alpha=0.3, s=10, color='teal')
+    axes[1, 0].plot([0, 100], [0, 100], 'r--', linewidth=2, label='Prediction parfaite')
+    axes[1, 0].set_xlabel('Age reel')
+    axes[1, 0].set_ylabel('Age predit')
+    axes[1, 0].set_title(f'Age reel vs predit (MAE={metrics["mae"]:.2f} ans)')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+
+    # 9d. Distribution des erreurs
+    errors = y_pred_years - y_test_years
+    axes[1, 1].hist(errors, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+    axes[1, 1].axvline(x=0, color='red', linestyle='--', linewidth=2)
+    axes[1, 1].set_xlabel('Erreur (annees)')
+    axes[1, 1].set_ylabel('Nombre')
+    axes[1, 1].set_title(f'Distribution des erreurs (MAE={metrics["mae"]:.2f} ans)')
+    axes[1, 1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / 'training_curves_age.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+    # 10. Export TFLite avec preprocessing + denormalisation integres
+    print("\n" + "=" * 50)
+    print("EXPORT TENSORFLOW LITE")
+    print("=" * 50)
+
+    # Construire un modele d'inference : RGB [0,255] -> age en annees
+    inference_input = layers.Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 3), name="input_image")
+
+    # Bake la standardisation des images dans le modele
+    x_inf = (inference_input - train_img_mean) / train_img_std
+
+    # Passer a travers le modele entraine (sans augmentation)
+    for layer in model.layers:
+        if layer.name == 'data_augmentation' or isinstance(layer, layers.InputLayer):
+            continue
+        x_inf = layer(x_inf)
+
+    # Denormaliser la sortie : age_normalise -> age en annees
+    age_output = x_inf * age_std + age_mean
+    inference_model = models.Model(inputs=inference_input, outputs=age_output, name="age_inference")
+
+    # Verifier que les predictions matchent
+    test_img = x_test_raw[:5] if 'x_test_raw' in dir() else (x_test * train_img_std + train_img_mean)[:5]
+    pred_original = y_pred_years[:5]
+    pred_inference = inference_model.predict(test_img, verbose=0).flatten()
+    for i in range(5):
+        diff = abs(pred_original[i] - pred_inference[i])
+        print(f"  Verification {i}: original={pred_original[i]:.1f}, inference={pred_inference[i]:.1f}, diff={diff:.2f}")
+
+    # Conversion TFLite
+    tflite_path = OUTPUT_DIR / 'model_age.tflite'
+    converter = tf.lite.TFLiteConverter.from_keras_model(inference_model)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    converter.target_spec.supported_types = [tf.float16]
+    tflite_model = converter.convert()
+
+    with open(tflite_path, 'wb') as f:
+        f.write(tflite_model)
+
+    size_mb = tflite_path.stat().st_size / (1024 * 1024)
+    print(f"\nModele TFLite sauvegarde : {tflite_path} ({size_mb:.1f} MB)")
+
+    # Verification TFLite
+    interpreter = tf.lite.Interpreter(model_path=str(tflite_path))
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    print(f"  Input  : shape={input_details[0]['shape']}, dtype={input_details[0]['dtype']}")
+    print(f"  Output : shape={output_details[0]['shape']}, dtype={output_details[0]['dtype']}")
+
+    # Test sur une vraie image
+    test_sample = (x_test[:1] * train_img_std + train_img_mean).astype(np.float32)
+    interpreter.set_tensor(input_details[0]['index'], test_sample)
+    interpreter.invoke()
+    tflite_age = interpreter.get_tensor(output_details[0]['index']).flatten()[0]
+    real_age = y_test_years[0]
+    print(f"  Test : reel={real_age:.0f} ans, TFLite={tflite_age:.1f} ans")
+    print("  TFLite OK!")
+
+    print("\n" + "=" * 50)
+    print("FICHIERS SAUVEGARDES")
+    print("=" * 50)
+    print("  - modele_age_utkface.keras")
+    print("  - model_age.tflite")
+    print("  - training_curves_age.png")
+    print("  - age_train_img_mean.npy / age_train_img_std.npy")
+    print("  - age_label_mean.npy / age_label_std.npy")

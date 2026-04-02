@@ -2,6 +2,7 @@ package com.example.ia_ethnie.ui.result;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.os.Bundle;
 import android.widget.Toast;
 
@@ -65,6 +66,37 @@ public class ResultActivity extends AppCompatActivity {
         binding.btnShare.setOnClickListener(v -> shareResult());
     }
 
+    private Bitmap applyExifRotation(Bitmap bitmap, String path) {
+        try {
+            androidx.exifinterface.media.ExifInterface exif =
+                    new androidx.exifinterface.media.ExifInterface(path);
+            int orientation = exif.getAttributeInt(
+                    androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL);
+
+            int rotation = 0;
+            switch (orientation) {
+                case androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90:
+                    rotation = 90; break;
+                case androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180:
+                    rotation = 180; break;
+                case androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270:
+                    rotation = 270; break;
+            }
+
+            if (rotation == 0) return bitmap;
+
+            Matrix matrix = new Matrix();
+            matrix.postRotate(rotation);
+            Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0,
+                    bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+            bitmap.recycle();
+            return rotated;
+        } catch (Exception e) {
+            return bitmap;
+        }
+    }
+
     private void processImage() {
         executor.execute(() -> {
             Bitmap bitmap = BitmapFactory.decodeFile(imagePath);
@@ -76,14 +108,17 @@ public class ResultActivity extends AppCompatActivity {
                 return;
             }
 
-            currentResult = faceAnalyzer.analyze(bitmap);
+            // Corriger la rotation EXIF (certains téléphones sauvegardent l'image à l'horizontale)
+            final Bitmap finalBitmap = applyExifRotation(bitmap, imagePath);
+
+            currentResult = faceAnalyzer.analyze(finalBitmap);
 
             runOnUiThread(() -> {
                 // Afficher le visage croppe si detecte, sinon l'image originale
                 if (currentResult.croppedFace != null) {
                     binding.ivFace.setImageBitmap(currentResult.croppedFace);
                 } else {
-                    binding.ivFace.setImageBitmap(bitmap);
+                    binding.ivFace.setImageBitmap(finalBitmap);
                 }
                 displayResult(currentResult);
             });

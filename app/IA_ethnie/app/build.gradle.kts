@@ -77,6 +77,9 @@ dependencies {
     // Glide pour chargement d'images
     implementation(libs.glide)
 
+    // ExifInterface pour corriger la rotation des photos
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // Firebase
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
