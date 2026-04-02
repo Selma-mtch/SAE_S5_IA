@@ -1,220 +1,136 @@
-# SAE S5 - Application d'Analyse Faciale par Intelligence Artificielle
+# FaceScan - Analyse Faciale par Intelligence Artificielle
 
-Application Android utilisant l'intelligence artificielle pour analyser des visages et prédire l'âge, le genre et l'ethnicité à partir d'images.
+Application Android qui predit l'age, le genre et l'ethnicite a partir de visages en utilisant des modeles de deep learning entraines sur le dataset UTKFace.
 
-## Fonctionnalités
+## Fonctionnalites
 
-### Authentification
-- Inscription avec nom d'utilisateur, email et mot de passe
-- Connexion sécurisée via Firebase Authentication
-- Gestion de session persistante
+- **Photo** : Capture ou import depuis la galerie
+- **Temps reel** : Analyse continue sur le flux camera (~5 fps)
+- **Detection de visage** : Localisation automatique du visage via Google ML Kit
+- **3 modes de prediction** : Modeles specialises, multi-taches ou transfer learning
+- **Historique** : Sauvegarde des analyses dans Firebase
+- **Authentification** : Inscription et connexion via Firebase
 
-### Analyse Faciale
-- **Capture photo** : Prise de photo via la caméra du téléphone
-- **Import galerie** : Sélection d'une image depuis la galerie
-- **Analyse en temps réel** : Analyse continue avec affichage en overlay sur le flux caméra
-- **Changement de caméra** : Basculement entre caméra frontale et arrière
+## Modeles
 
-### Résultats
-- Prédiction de l'âge (en années)
-- Classification du genre (Homme/Femme)
-- Classification de l'ethnicité (5 catégories : Blanc, Noir, Asiatique, Indien, Autre)
-- Scores de confiance affichés en pourcentage
-- Partage des résultats
+| Modele | Input | Sorties |
+|--------|-------|---------|
+| Multi-taches | 128x128 RGB | age + genre + ethnicite |
+| Transfer (MobileNetV2) | 128x128 RGB | age + genre + ethnicite |
+| Age specialise | 128x128 RGB | age |
+| Genre specialise | 128x128 grayscale | genre |
+| Ethnicite specialise | 128x128 grayscale | ethnicite |
 
-### Historique
-- Consultation de toutes les analyses précédentes
-- Affichage de la date, du type de modèle et des attributs prédits
-- Suppression individuelle ou globale de l'historique
-- Aperçu des images analysées
+Classes d'ethnicite : Blanc, Noir, Asiatique, Indien, Autre
 
-### Modèles IA
-Trois types de modèles disponibles :
-1. **Modèles spécialisés** : 3 CNN séparés (âge, genre, ethnicité)
-2. **Multi-task Learning** : Modèle unifié ResNet + SE-Net
-3. **Transfer Learning** : Basé sur MobileNetV2/EfficientNetB0
+L'application detecte automatiquement le format d'entree (grayscale/RGB) et le type de sortie (sigmoid/softmax) de chaque modele.
 
-## Technologies Utilisées
+## Technologies
 
-### Application Android
-| Technologie | Utilisation |
-|-------------|-------------|
-| Java | Langage de programmation principal |
-| Android SDK 24-34 | Compatibilité Android 7.0 à 14 |
-| CameraX | API caméra moderne |
-| Material Design 3 | Interface utilisateur |
-| View Binding | Liaison des vues |
-| Glide | Chargement et cache d'images |
+- **Android** : Java, CameraX, Material Design 3, View Binding
+- **IA** : TensorFlow Lite, Google ML Kit Face Detection
+- **Backend** : Firebase Authentication, Firestore
+- **Entrainement** : TensorFlow / Keras, dataset UTKFace (23 000+ images)
 
-### Backend & Base de données
-| Technologie | Utilisation |
-|-------------|-------------|
-| Firebase Authentication | Authentification utilisateurs |
-| Firebase Firestore | Base de données NoSQL cloud |
-| Firebase Storage | Stockage de fichiers |
-
-### Intelligence Artificielle
-| Technologie | Utilisation |
-|-------------|-------------|
-| TensorFlow Lite | Inférence sur mobile |
-| TensorFlow Lite GPU | Accélération GPU optionnelle |
-| UTKFace Dataset | Dataset d'entraînement |
-
-## Architecture du Projet
+## Architecture
 
 ```
 SAE_S5_IA/
-├── app/IA_ethnie/                    # Projet Android principal
+├── app/IA_ethnie/                          # Application Android
 │   ├── app/src/main/
 │   │   ├── java/com/example/ia_ethnie/
 │   │   │   ├── ui/
-│   │   │   │   ├── auth/             # LoginActivity, RegisterActivity
-│   │   │   │   ├── main/             # MainActivity (hub principal)
-│   │   │   │   ├── camera/           # CameraActivity (capture & temps réel)
-│   │   │   │   ├── result/           # ResultActivity (affichage résultats)
-│   │   │   │   ├── history/          # HistoryActivity (historique)
-│   │   │   │   └── info/             # ModelInfoActivity (documentation)
+│   │   │   │   ├── auth/                   # Login, Register
+│   │   │   │   ├── main/                   # Hub principal
+│   │   │   │   ├── camera/                 # Capture et temps reel
+│   │   │   │   ├── result/                 # Affichage des predictions
+│   │   │   │   ├── history/                # Historique des analyses
+│   │   │   │   └── info/                   # A propos
 │   │   │   ├── ml/
-│   │   │   │   └── FaceAnalyzer.java # Moteur d'inférence ML
+│   │   │   │   ├── FaceAnalyzer.java       # Inference TFLite
+│   │   │   │   └── FaceDetectorHelper.java # Detection de visage
 │   │   │   └── utils/
-│   │   │       └── SessionManager.java # Gestion de session
-│   │   ├── res/                      # Ressources (layouts, strings, etc.)
-│   │   └── assets/                   # Modèles TFLite
-│   └── build.gradle.kts              # Dépendances
+│   │   │       └── SessionManager.java
+│   │   └── assets/                         # Modeles .tflite
+│   └── build.gradle.kts
 │
-├── Model_ia/                         # Scripts d'entraînement Python
-│   ├── Age/                          # Modèles de prédiction d'âge
-│   └── Model_CNN_ethnie/             # Modèles CNN pour ethnicité
+├── Model_ia/                               # Scripts d'entrainement Python
+│   ├── Age/                                # Prediction d'age (CNN, MobileNetV2)
+│   ├── Genre/                              # Classification du genre
+│   ├── Model_CNN_ethnie/                   # Classification ethnicite (Focal Loss, augmentation ciblee)
+│   ├── Modele general/                     # Modeles multi-taches + export TFLite
+│   └── modele-par-transfert-de-connaissances/  # Transfer learning MobileNetV2
 │
-└── SAE2 (1).ipynb                    # Notebook d'exploration de données
+└── README.md
 ```
 
 ## Flux de l'Application
 
 ```
-LoginActivity
-    ↓ (connexion réussie)
-MainActivity (Hub avec 6 cartes)
-    ├→ CameraActivity (capture) → ResultActivity → sauvegarde Firestore
-    ├→ CameraActivity (temps réel) → affichage overlay
-    ├→ Sélection galerie → ResultActivity → sauvegarde Firestore
-    ├→ HistoryActivity → récupération depuis Firestore
-    ├→ ModelInfoActivity → documentation
-    └→ Paramètres → sélection du type de modèle
+Login → MainActivity → Camera → ML Kit detecte le visage → crop → TFLite → Resultats
+                     → Temps reel → ML Kit + TFLite en continu → overlay
+                     → Galerie → Resultats
+                     → Historique (Firestore)
+                     → Parametres (choix du modele)
 ```
 
 ## Installation
 
-### Prérequis
-- Android Studio Hedgehog (2023.1.1) ou supérieur
-- JDK 11 ou supérieur
-- Un appareil Android (API 24+) ou émulateur
+### Prerequis
+- Android Studio (2023.1.1+)
+- JDK 11+
+- Appareil Android API 24+ ou emulateur
 
-### Configuration
+### Etapes
 
-1. **Cloner le repository**
+1. Cloner le repository
    ```bash
-   git clone https://github.com/votre-repo/SAE_S5_IA.git
+   git clone https://github.com/Selma-mtch/SAE_S5_IA.git
    cd SAE_S5_IA
    ```
 
-2. **Ouvrir dans Android Studio**
-   - Ouvrir le dossier `app/IA_ethnie/` dans Android Studio
-   - Attendre la synchronisation Gradle
+2. Ouvrir le dossier `app/IA_ethnie/` dans Android Studio et attendre la synchronisation Gradle
 
-3. **Configurer Firebase**
-   - Créer un projet Firebase sur [console.firebase.google.com](https://console.firebase.google.com)
-   - Activer Authentication (Email/Password)
-   - Activer Firestore Database
-   - Télécharger `google-services.json` et le placer dans `app/IA_ethnie/app/`
+3. Configurer Firebase :
+   - Creer un projet sur [console.firebase.google.com](https://console.firebase.google.com)
+   - Activer Authentication (Email/Password) et Firestore
+   - Placer `google-services.json` dans `app/IA_ethnie/app/`
 
-4. **Ajouter les modèles TFLite**
-   - Placer les fichiers `.tflite` dans `app/src/main/assets/`
-   - Fichiers requis :
-     - `model_age.tflite`
-     - `model_gender.tflite`
-     - `model_ethnicity.tflite`
-     - `model_multitask.tflite` (optionnel)
-     - `model_transfer.tflite` (optionnel)
-
-5. **Build et Run**
+4. Build et run
    ```bash
+   cd app/IA_ethnie
    ./gradlew assembleDebug
    ```
-   Ou utiliser le bouton Run dans Android Studio
+
+## Scripts d'Entrainement
+
+Les scripts Python sont dans `Model_ia/` et s'executent sur Kaggle avec GPU.
+
+| Script | Description |
+|--------|-------------|
+| `Age/Model_MobileNet_age.py` | Age par transfer learning MobileNetV2 |
+| `Genre/modele_genre_v3_128_gris.py` | Genre CNN grayscale 128x128 |
+| `Model_CNN_ethnie/model/model_ethnie_focal_augmentation_ciblee.py` | Ethnicite avec Focal Loss + augmentation ciblee |
+| `Modele general/train_multitask_tflite.py` | Multi-taches avec export TFLite |
+| `modele-par-transfert-de-connaissances/model_transfer_mobilenet.py` | Transfer learning MobileNetV2 multi-taches |
 
 ## Structure Firebase
 
-### Collection `users`
 ```
 users/{uid}
-  - username: string
-  - email: string
-  - createdAt: timestamp
-```
+  - username, email, createdAt
 
-### Collection `predictions`
-```
 predictions/{docId}
-  - userId: string
-  - age: integer
-  - gender: string
-  - ethnicity: string
-  - ageConfidence: float
-  - genderConfidence: float
-  - ethnicityConfidence: float
-  - modelType: string (SPECIALIZED|MULTI_TASK|TRANSFER)
-  - localImagePath: string
-  - createdAt: timestamp
+  - userId, age, gender, ethnicity
+  - ageConfidence, genderConfidence, ethnicityConfidence
+  - modelType (SPECIALIZED | MULTI_TASK | TRANSFER)
+  - localImagePath, createdAt
 ```
 
-## Modèles d'IA
+## Equipe
 
-### Dataset
-Les modèles sont entraînés sur le dataset **UTKFace** contenant plus de 20 000 images de visages annotées avec l'âge, le genre et l'ethnicité.
-
-### Architectures
-
-#### Modèles Spécialisés
-- 3 CNN indépendants optimisés pour chaque tâche
-- Input : Image grayscale 128x128 normalisée [0,1]
-
-#### Multi-Task Learning
-- Architecture ResNet avec blocs Squeeze-Excitation (SE-Net)
-- Apprentissage simultané des 3 attributs
-- Précision ethnicité : ~74%
-
-#### Transfer Learning
-- Base : MobileNetV2 ou EfficientNetB0 pré-entraîné sur ImageNet
-- Fine-tuning sur UTKFace
-- Optimisé pour l'efficacité mobile
-
-### Entraînement
-Les scripts Python pour l'entraînement sont dans `Model_ia/` :
-```bash
-cd Model_ia/Model_CNN_ethnie
-python model_resnet_se.py  # Exemple
-```
-
-## Améliorations Futures
-
-- [ ] Connexion OAuth (Google, Facebook)
-- [ ] Réinitialisation de mot de passe
-- [ ] Dashboard statistiques
-- [ ] Export des données (CSV/PDF)
-- [ ] Détection multi-visages
-- [ ] Estimation des émotions
-- [ ] Mode hors-ligne
-- [ ] Support multilingue
-
-## Équipe
-
-Projet réalisé dans le cadre de la SAE S5 - Intelligence Artificielle.
+Projet realise dans le cadre de la SAE S5 - Intelligence Artificielle.
 
 ## Licence
 
-Ce projet est à but éducatif. Les modèles et le dataset UTKFace sont soumis à leurs licences respectives.
-
----
-
-*Développé avec Android Studio et TensorFlow Lite*
+Projet a but educatif. Le dataset UTKFace est soumis a sa licence propre.
