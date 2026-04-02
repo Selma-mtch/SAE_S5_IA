@@ -174,7 +174,14 @@ public class FaceAnalyzer {
                 break;
             case MULTI_TASK:
             default:
-                result = analyzeWithMultiTaskModel(preprocessGrayscale(resizedBitmap));
+                // Détecter automatiquement si le modèle attend grayscale ou RGB
+                if (multiTaskInterpreter != null) {
+                    int channels = multiTaskInterpreter.getInputTensor(0).shape()[3];
+                    result = analyzeWithMultiTaskModel(
+                            channels == 1 ? preprocessGrayscale(resizedBitmap) : preprocessRGB(resizedBitmap));
+                } else {
+                    result = createDemoResult();
+                }
                 break;
         }
 
@@ -257,21 +264,21 @@ public class FaceAnalyzer {
             }
         }
 
-        // Fallback par shape si les noms n'ont pas marche
+        // Fallback par shape : [1,5]=ethnie, [1,2]=gender, [1,1]=age
         if (ageIdx == -1 || genderIdx == -1 || ethIdx == -1) {
             for (int i = 0; i < outputCount; i++) {
                 int[] shape = multiTaskInterpreter.getOutputTensor(i).shape();
                 if (shape.length == 2 && shape[1] == NUM_ETHNICITY_CLASSES && ethIdx == -1) {
                     ethIdx = i;
+                } else if (shape.length == 2 && shape[1] == NUM_GENDER_CLASSES && genderIdx == -1) {
+                    genderIdx = i;
                 }
             }
-            // Les deux (1,1) restants : on log les valeurs pour debug
             for (int i = 0; i < outputCount; i++) {
-                if (i == ethIdx) continue;
+                if (i == ethIdx || i == genderIdx) continue;
                 int[] shape = multiTaskInterpreter.getOutputTensor(i).shape();
-                if (shape.length == 2 && shape[1] == 1) {
-                    if (ageIdx == -1) ageIdx = i;
-                    else if (genderIdx == -1) genderIdx = i;
+                if (shape.length == 2 && shape[1] == 1 && ageIdx == -1) {
+                    ageIdx = i;
                 }
             }
         }
@@ -280,17 +287,11 @@ public class FaceAnalyzer {
         if (genderIdx == -1) genderIdx = 1;
         if (ethIdx == -1) ethIdx = 2;
 
-        // Log pour debug
-        android.util.Log.d("FaceAnalyzer", "Output mapping -> age=" + ageIdx
-                + " gender=" + genderIdx + " ethnicity=" + ethIdx);
-        for (int i = 0; i < outputCount; i++) {
-            android.util.Log.d("FaceAnalyzer", "Output " + i
-                    + ": name=" + multiTaskInterpreter.getOutputTensor(i).name()
-                    + " shape=" + java.util.Arrays.toString(multiTaskInterpreter.getOutputTensor(i).shape()));
-        }
+        // Déterminer la taille de sortie du gender (softmax 2 ou sigmoid 1)
+        int genderOutputSize = multiTaskInterpreter.getOutputTensor(genderIdx).shape()[1];
 
         float[][] ageOutput = new float[1][1];
-        float[][] genderOutput = new float[1][1];
+        float[][] genderOutput = new float[1][genderOutputSize];
         float[][] ethnicityOutput = new float[1][NUM_ETHNICITY_CLASSES];
 
         Object[] inputs = {inputBuffer};
@@ -301,27 +302,23 @@ public class FaceAnalyzer {
 
         multiTaskInterpreter.runForMultipleInputsOutputs(inputs, outputs);
 
-        android.util.Log.d("FaceAnalyzer", "Raw age=" + ageOutput[0][0]
-                + " gender=" + genderOutput[0][0]
-                + " ethnicity=" + java.util.Arrays.toString(ethnicityOutput[0]));
+        // Age : si valeur <= 1.0 c'est normalisé /100, sinon c'est brut en années
+        float ageRaw = ageOutput[0][0];
+        int predictedAge = Math.round(ageRaw <= 1.0f ? ageRaw * 100.0f : ageRaw);
 
-        // Si age ressemble a une sigmoid (0-1) et gender a un age (>1),
-        // ils sont inverses -> on swap
-        if (ageOutput[0][0] >= 0.0f && ageOutput[0][0] <= 1.0f
-                && genderOutput[0][0] > 1.0f) {
-            android.util.Log.w("FaceAnalyzer", "Age/Gender swapped, correcting...");
-            float[][] temp = ageOutput;
-            ageOutput = genderOutput;
-            genderOutput = temp;
+        // Gender : softmax 2 classes ou sigmoid 1 classe
+        int genderIndex;
+        float genderConf;
+        if (genderOutputSize >= NUM_GENDER_CLASSES) {
+            // Softmax 2 classes [Homme, Femme]
+            genderIndex = argMax(genderOutput[0]);
+            genderConf = genderOutput[0][genderIndex];
+        } else {
+            // Sigmoid : 0 = Homme, 1 = Femme
+            float genderSigmoid = genderOutput[0][0];
+            genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
+            genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
         }
-
-        // Age : valeur brute de la regression
-        int predictedAge = Math.round(ageOutput[0][0]);
-
-        // Gender : sigmoid -> 0 = Homme, 1 = Femme
-        float genderSigmoid = genderOutput[0][0];
-        int genderIndex = genderSigmoid >= 0.5f ? 1 : 0;
-        float genderConf = genderIndex == 1 ? genderSigmoid : (1.0f - genderSigmoid);
 
         // Ethnicity : softmax -> argmax
         int ethnicityIndex = argMax(ethnicityOutput[0]);
@@ -417,8 +414,9 @@ public class FaceAnalyzer {
                 + " eth=" + java.util.Arrays.toString(ethnicityOutput[0]));
         android.util.Log.d("FaceAnalyzer", "Index mapping - ageIdx=" + ageIdx + " genderIdx=" + genderIdx + " ethIdx=" + ethIdx);
 
-        // Age
-        int predictedAge = Math.round(ageOutput[0][0]);
+        // Age : si valeur <= 1.0 c'est normalisé /100, sinon c'est brut en années
+        float ageRawT = ageOutput[0][0];
+        int predictedAge = Math.round(ageRawT <= 1.0f ? ageRawT * 100.0f : ageRawT);
 
         // Gender : softmax 2 classes ou sigmoid
         int genderIndex;
